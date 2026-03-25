@@ -70,10 +70,28 @@ if(UNIX AND NOT APPLE)
 elseif(WIN32)
     message(STATUS "Configuring for Windows...")
     
+    # Force Windows to target Windows 10/11 APIs and prevent the WinSock clash
+    target_compile_definitions(VoiceChatApp PRIVATE
+        WIN32_LEAN_AND_MEAN
+        _WIN32_WINNT=0x0A00
+    )
+    
     target_link_libraries(VoiceChatApp PRIVATE 
         ws2_32 
         wsock32
         rtaudio
         opus
+    )
+endif()
+# ------------------------------------------------------------------------------
+# Post-Build Automation (Windows Only)
+# ------------------------------------------------------------------------------
+if(WIN32)
+    # Automatically copy the Opus DLL to the folder where the executable was built
+    add_custom_command(TARGET VoiceChatApp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:opus>
+        $<TARGET_FILE_DIR:VoiceChatApp>
+        COMMENT "Copying opus.dll to the output directory..."
     )
 endif()
