@@ -5,7 +5,7 @@
 AudioEngine::AudioEngine()
 {
     m_sampleRate = 48000;
-    m_channels = 1;
+    m_audioChannelCount = 1;
     m_frameSize = 960; 
     m_maxPacketSize = 4000;
     m_opusEncoder = nullptr;
@@ -32,14 +32,14 @@ bool AudioEngine::initialize()
 {
     int opusError = OPUS_OK;
 
-    m_opusEncoder = opus_encoder_create(m_sampleRate, m_channels, OPUS_APPLICATION_VOIP, &opusError);
+    m_opusEncoder = opus_encoder_create(m_sampleRate, m_audioChannelCount, OPUS_APPLICATION_VOIP, &opusError);
     if (opusError != OPUS_OK)
     {
         std::cerr << "Failed to create Opus encoder." << std::endl;
         return false;
     }
 
-    m_opusDecoder = opus_decoder_create(m_sampleRate, m_channels, &opusError);
+    m_opusDecoder = opus_decoder_create(m_sampleRate, m_audioChannelCount, &opusError);
     if (opusError != OPUS_OK)
     {
         std::cerr << "Failed to create Opus decoder." << std::endl;
@@ -54,12 +54,12 @@ bool AudioEngine::initialize()
 
     RtAudio::StreamParameters outputParams;
     outputParams.deviceId = m_audioSystem.getDefaultOutputDevice();
-    outputParams.nChannels = m_channels;
+    outputParams.nChannels = m_audioChannelCount;
     outputParams.firstChannel = 0;
 
     RtAudio::StreamParameters inputParams;
     inputParams.deviceId = m_audioSystem.getDefaultInputDevice();
-    inputParams.nChannels = m_channels;
+    inputParams.nChannels = m_audioChannelCount;
     inputParams.firstChannel = 0;
 
     unsigned int bufferFrames = m_frameSize;
@@ -115,20 +115,23 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
 
     if (inputBuffer != nullptr)
     {
-        double sumSquares = 0.0;
-        int totalSamples = nFrames * m_channels;
-        for (int i = 0; i < totalSamples; ++i) {
-            double sample = inputBuffer[i] / 32768.0;
-            sumSquares += sample * sample;
+        double sumOfSquares = 0.0;
+        int totalSamples = nFrames * m_audioChannelCount;
+        for (int sampleIndex = 0; sampleIndex < totalSamples; ++sampleIndex)
+        {
+            double normalizedSample = inputBuffer[sampleIndex] / 32768.0;
+            sumOfSquares += normalizedSample * normalizedSample;
         }
-        double rms = std::sqrt(sumSquares / totalSamples);
+        double rootMeanSquare = std::sqrt(sumOfSquares / totalSamples);
 
-        double threshold = 0.015; // roughly -36 dB
-        if (rms > threshold) {
+        double voiceActivationThreshold = 0.015; // roughly -36 dB
+        if (rootMeanSquare > voiceActivationThreshold)
+        {
             m_vadHoldFrames = 25; // Hold for ~500ms (25 chunks of 20ms)
         }
 
-        if (m_vadHoldFrames > 0) {
+        if (m_vadHoldFrames > 0)
+        {
             m_vadHoldFrames--;
             
             std::vector<uint8_t> encodedData(m_maxPacketSize);
@@ -154,12 +157,12 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
             // If the packet was corrupted and decoding failed, play silence
             if (decodeResult < 0)
             {
-                std::memset(outputBuffer, 0, nFrames * m_channels * sizeof(int16_t));
+                std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
             }
         }
         else
         {
-            std::memset(outputBuffer, 0, nFrames * m_channels * sizeof(int16_t));
+            std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
         }
     }
 

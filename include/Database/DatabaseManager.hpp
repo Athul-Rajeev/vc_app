@@ -4,7 +4,8 @@
 
 struct sqlite3;
 
-struct ChatMessage {
+struct ChatMessage
+{
     int id;
     int channelId;
     std::string uuid;
@@ -13,12 +14,14 @@ struct ChatMessage {
     std::string timestamp;
 };
 
-struct Channel {
+struct Channel
+{
     int id;
     std::string name;
 };
 
-class DatabaseManager {
+class DatabaseManager
+{
 public:
     DatabaseManager();
     ~DatabaseManager();

@@ -39,38 +39,38 @@ bool DatabaseManager::initialize(const std::string& dbPath)
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "name TEXT UNIQUE);";
 
-    char* errMsg = nullptr;
-    if (sqlite3_exec(m_db, sqlCreateMessages, 0, 0, &errMsg) != SQLITE_OK) 
+    char* errorMessage = nullptr;
+    if (sqlite3_exec(m_db, sqlCreateMessages, 0, 0, &errorMessage) != SQLITE_OK) 
     {
-        std::cerr << "SQL error (messages): " << errMsg << std::endl;
-        sqlite3_free(errMsg);
+        std::cerr << "SQL error (messages): " << errorMessage << std::endl;
+        sqlite3_free(errorMessage);
         return false;
     }
     
-    if (sqlite3_exec(m_db, sqlCreateTextChannels, 0, 0, &errMsg) != SQLITE_OK) 
+    if (sqlite3_exec(m_db, sqlCreateTextChannels, 0, 0, &errorMessage) != SQLITE_OK) 
     {
-        std::cerr << "SQL error (text_channels): " << errMsg << std::endl;
-        sqlite3_free(errMsg);
+        std::cerr << "SQL error (text_channels): " << errorMessage << std::endl;
+        sqlite3_free(errorMessage);
         return false;
     }
     
-    if (sqlite3_exec(m_db, sqlCreateVoiceChannels, 0, 0, &errMsg) != SQLITE_OK) 
+    if (sqlite3_exec(m_db, sqlCreateVoiceChannels, 0, 0, &errorMessage) != SQLITE_OK) 
     {
-        std::cerr << "SQL error (voice_channels): " << errMsg << std::endl;
-        sqlite3_free(errMsg);
+        std::cerr << "SQL error (voice_channels): " << errorMessage << std::endl;
+        sqlite3_free(errorMessage);
         return false;
     }
     
     // Seed defaults if empty
-    auto texts = fetchTextChannels();
-    if (texts.empty()) 
+    auto existingTextChannels = fetchTextChannels();
+    if (existingTextChannels.empty()) 
     {
         addTextChannel("general");
         addTextChannel("development");
     }
     
-    auto voices = fetchVoiceChannels();
-    if (voices.empty()) 
+    auto existingVoiceChannels = fetchVoiceChannels();
+    if (existingVoiceChannels.empty()) 
     {
         addVoiceChannel("Voice General");
     }
@@ -121,23 +121,23 @@ std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int l
 
         while (sqlite3_step(stmt) == SQLITE_ROW) 
         {
-            ChatMessage msg;
-            msg.id = sqlite3_column_int(stmt, 0);
-            msg.channelId = sqlite3_column_int(stmt, 1);
+            ChatMessage chatMessage;
+            chatMessage.id = sqlite3_column_int(stmt, 0);
+            chatMessage.channelId = sqlite3_column_int(stmt, 1);
             
-            const unsigned char* u = sqlite3_column_text(stmt, 2);
-            msg.uuid = u ? reinterpret_cast<const char*>(u) : "";
+            const unsigned char* rawUuid = sqlite3_column_text(stmt, 2);
+            chatMessage.uuid = rawUuid ? reinterpret_cast<const char*>(rawUuid) : "";
             
-            const unsigned char* nm = sqlite3_column_text(stmt, 3);
-            msg.username = nm ? reinterpret_cast<const char*>(nm) : "";
+            const unsigned char* rawUsername = sqlite3_column_text(stmt, 3);
+            chatMessage.username = rawUsername ? reinterpret_cast<const char*>(rawUsername) : "";
             
-            const unsigned char* m = sqlite3_column_text(stmt, 4);
-            msg.message = m ? reinterpret_cast<const char*>(m) : "";
+            const unsigned char* rawMessage = sqlite3_column_text(stmt, 4);
+            chatMessage.message = rawMessage ? reinterpret_cast<const char*>(rawMessage) : "";
             
-            const unsigned char* t = sqlite3_column_text(stmt, 5);
-            msg.timestamp = t ? reinterpret_cast<const char*>(t) : "";
+            const unsigned char* rawTimestamp = sqlite3_column_text(stmt, 5);
+            chatMessage.timestamp = rawTimestamp ? reinterpret_cast<const char*>(rawTimestamp) : "";
             
-            history.push_back(msg);
+            history.push_back(chatMessage);
         }
         sqlite3_finalize(stmt);
     } 
@@ -158,11 +158,11 @@ std::vector<Channel> DatabaseManager::fetchTextChannels()
     {
         while (sqlite3_step(stmt) == SQLITE_ROW) 
         {
-            Channel ch;
-            ch.id = sqlite3_column_int(stmt, 0);
-            const unsigned char* nm = sqlite3_column_text(stmt, 1);
-            ch.name = nm ? reinterpret_cast<const char*>(nm) : "";
-            channels.push_back(ch);
+            Channel channel;
+            channel.id = sqlite3_column_int(stmt, 0);
+            const unsigned char* rawName = sqlite3_column_text(stmt, 1);
+            channel.name = rawName ? reinterpret_cast<const char*>(rawName) : "";
+            channels.push_back(channel);
         }
         sqlite3_finalize(stmt);
     }
@@ -174,14 +174,15 @@ std::vector<Channel> DatabaseManager::fetchVoiceChannels()
     std::vector<Channel> channels;
     if (!m_db) return channels;
     sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(m_db, "SELECT id, name FROM voice_channels ORDER BY id ASC", -1, &stmt, 0) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(m_db, "SELECT id, name FROM voice_channels ORDER BY id ASC", -1, &stmt, 0) == SQLITE_OK) 
+    {
         while (sqlite3_step(stmt) == SQLITE_ROW) 
         {
-            Channel ch;
-            ch.id = sqlite3_column_int(stmt, 0);
-            const unsigned char* nm = sqlite3_column_text(stmt, 1);
-            ch.name = nm ? reinterpret_cast<const char*>(nm) : "";
-            channels.push_back(ch);
+            Channel channel;
+            channel.id = sqlite3_column_int(stmt, 0);
+            const unsigned char* rawName = sqlite3_column_text(stmt, 1);
+            channel.name = rawName ? reinterpret_cast<const char*>(rawName) : "";
+            channels.push_back(channel);
         }
         sqlite3_finalize(stmt);
     }

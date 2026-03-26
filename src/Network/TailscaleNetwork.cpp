@@ -22,7 +22,8 @@ bool TailscaleNetwork::initialize(bool isServerMode)
     {
         m_udpSocket.open(asio::ip::udp::v4());
         
-        if (m_isServerMode) {
+        if (m_isServerMode) 
+        {
             asio::ip::udp::endpoint localEndpoint(asio::ip::udp::v4(), m_port);
             m_udpSocket.bind(localEndpoint);
             
@@ -34,7 +35,9 @@ bool TailscaleNetwork::initialize(bool isServerMode)
             m_tcpAcceptor.non_blocking(true);
             
             std::cout << "TailscaleServer initialized. Bound to UDP 50000, TCP 50001." << std::endl;
-        } else {
+        } 
+        else 
+        {
             std::cout << "TailscaleClient initialized." << std::endl;
         }
         return true;
@@ -56,7 +59,8 @@ void TailscaleNetwork::sendData(const std::string& targetIp, const std::vector<u
         std::string port = std::to_string(m_port);
         
         size_t colonPos = targetIp.find(':');
-        if (colonPos != std::string::npos) {
+        if (colonPos != std::string::npos) 
+        {
             ip = targetIp.substr(0, colonPos);
             port = targetIp.substr(colonPos + 1);
         }
@@ -98,7 +102,8 @@ NetworkPacket TailscaleNetwork::receiveData()
 
 std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, const std::string& payload)
 {
-    try {
+    try 
+    {
         asio::ip::tcp::socket socket(m_ioContext);
         asio::ip::tcp::resolver resolver(m_ioContext);
         
@@ -117,10 +122,15 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
         socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
         socket.close();
         
-        if (!ec || ec == asio::error::eof) {
+        if (!ec || ec == asio::error::eof) 
+        {
             return std::string(response, length);
         }
-    } catch (...) {}
+    } 
+    catch (...) 
+    {
+        
+    }
     
     return "";
 }
@@ -129,26 +139,34 @@ void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::s
 {
     if (!m_isServerMode || !m_tcpAcceptor.is_open()) return;
     
-    try {
+    try 
+    {
         asio::error_code ec;
         asio::ip::tcp::socket socket(m_ioContext);
         m_tcpAcceptor.accept(socket, ec);
         
-        if (!ec) {
+        if (!ec) 
+        {
             char data[4096];
             size_t length = socket.read_some(asio::buffer(data), ec);
             std::string incomingIp = socket.remote_endpoint().address().to_string();
             
-            if (!ec || ec == asio::error::eof) {
+            if (!ec || ec == asio::error::eof) 
+            {
                 std::string request(data, length);
                 std::string response = requestHandler(incomingIp, request);
                 
-                if (!response.empty()) {
+                if (!response.empty()) 
+                {
                     asio::write(socket, asio::buffer(response));
                 }
             }
             socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
             socket.close();
         }
-    } catch (...) {}
+    } 
+    catch (...) 
+    {
+
+    }
 }

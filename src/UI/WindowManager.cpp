@@ -22,7 +22,8 @@ WindowManager::WindowManager()
     m_chatHistory.push_back("System: Welcome to the server!");
     
     m_username = Utils::getSavedUsername();
-    if (!m_username.empty()) {
+    if (!m_username.empty())
+    {
         m_isLoggedIn = true;
     }
 }
@@ -42,13 +43,13 @@ bool WindowManager::initialize()
 
     // Decide GL+GLSL versions
 #if defined(__APPLE__)
-    const char* glsl_version = "#version 150";
+    const char* glslVersion = "#version 150";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // Required on Mac
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #else
-    const char* glsl_version = "#version 130";
+    const char* glslVersion = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 #endif
@@ -61,26 +62,26 @@ bool WindowManager::initialize()
     }
 
     glfwMakeContextCurrent(m_window);
-    glfwSwapInterval(1); // Enable vsync
+    glfwSwapInterval(1);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGuiIO& imguiIO = ImGui::GetIO();
+    imguiIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    io.Fonts->AddFontDefault();
-    ImFontConfig icons_config;
-    icons_config.MergeMode = true;
-    icons_config.PixelSnapH = true;
-    icons_config.OversampleH = 1;
-    icons_config.OversampleV = 1;
-    static const ImWchar icons_ranges[] = { ICON_MIN_FA, ICON_MAX_16_FA, 0 };
-    io.Fonts->AddFontFromFileTTF("assets/fa-solid-900.ttf", 14.0f, &icons_config, icons_ranges);
+    imguiIO.Fonts->AddFontDefault();
+    ImFontConfig iconsConfig;
+    iconsConfig.MergeMode = true;
+    iconsConfig.PixelSnapH = true;
+    iconsConfig.OversampleH = 1;
+    iconsConfig.OversampleV = 1;
+    static const ImWchar iconsRanges[] = { ICON_MIN_FA, ICON_MAX_16_FA, 0 };
+    imguiIO.Fonts->AddFontFromFileTTF("assets/fa-solid-900.ttf", 14.0f, &iconsConfig, iconsRanges);
 
     setupDarkTheme();
 
     ImGui_ImplGlfw_InitForOpenGL(m_window, true);
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui_ImplOpenGL3_Init(glslVersion);
 
     return true;
 }
@@ -131,115 +132,124 @@ void WindowManager::render()
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
     
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("MainLayout", nullptr, window_flags);
+    ImGui::Begin("MainLayout", nullptr, windowFlags);
     ImGui::PopStyleVar();
 
     const float sidebarWidth = 250.0f;
     const float userPanelHeight = 60.0f;
     const float chatAreaWidth = viewport->WorkSize.x - sidebarWidth;
 
-    // --- LEFT COLUMN (Panel A + Panel B) ---
+    // --- LEFT COLUMN (Channel Sidebar + User Controls) ---
     ImGui::BeginChild("LeftColumn", ImVec2(sidebarWidth, viewport->WorkSize.y), false);
     
-    // Panel A: Channel Sidebar
-    ImGui::BeginChild("PanelA", ImVec2(sidebarWidth, viewport->WorkSize.y - userPanelHeight), false);
+    // Channel Sidebar
+    ImGui::BeginChild("ChannelSidebar", ImVec2(sidebarWidth, viewport->WorkSize.y - userPanelHeight), false);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
     ImGui::SetCursorPos(ImVec2(10, 10));
     ImGui::TextDisabled("SERVER NAME");
     ImGui::Separator();
     
-    std::vector<std::pair<int, std::string>> textChans, voiceChans;
+    std::vector<std::pair<int, std::string>> textChannels, voiceChannels;
     {
         std::lock_guard<std::mutex> lock(m_channelsMutex);
-        textChans = m_textChannelsList;
-        voiceChans = m_voiceChannelsList;
+        textChannels = m_textChannelsList;
+        voiceChannels = m_voiceChannelsList;
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 4.0f));
 
-    bool openText = ImGui::CollapsingHeader("TEXT CHANNELS", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowItemOverlap);
+    bool isTextSectionOpen = ImGui::CollapsingHeader("TEXT CHANNELS", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowItemOverlap);
     ImGui::SameLine(ImGui::GetWindowWidth() - 40);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0,0,0,0));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     if (ImGui::Button("+##text_add")) ImGui::OpenPopup("Add Text Channel");
     ImGui::PopStyleColor();
 
-    if (ImGui::BeginPopupModal("Add Text Channel", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static char nameBuf[64] = "";
-        ImGui::InputText("Name", nameBuf, 64);
-        if (ImGui::Button("Create", ImVec2(120, 0))) {
-            if (strlen(nameBuf) > 0) {
+    if (ImGui::BeginPopupModal("Add Text Channel", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        static char channelNameBuffer[64] = "";
+        ImGui::InputText("Name", channelNameBuffer, 64);
+        if (ImGui::Button("Create", ImVec2(120, 0)))
+        {
+            if (strlen(channelNameBuffer) > 0)
+            {
                 std::lock_guard<std::mutex> lock(m_channelsMutex);
-                m_pendingNewTextChannels.push(nameBuf);
-                std::memset(nameBuf, 0, sizeof(nameBuf));
+                m_pendingNewTextChannels.push(channelNameBuffer);
+                std::memset(channelNameBuffer, 0, sizeof(channelNameBuffer));
                 ImGui::CloseCurrentPopup();
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 
-    if (openText) 
+    if (isTextSectionOpen) 
     {
-        for (const auto& ch : textChans) {
-            std::string label = std::string(ICON_FA_HASHTAG) + " " + ch.second;
-            if (ImGui::Selectable(label.c_str(), m_selectedTextChannelId == ch.first)) m_selectedTextChannelId = ch.first;
+        for (const auto& channel : textChannels)
+        {
+            std::string channelLabel = std::string(ICON_FA_HASHTAG) + " " + channel.second;
+            if (ImGui::Selectable(channelLabel.c_str(), m_selectedTextChannelId == channel.first)) m_selectedTextChannelId = channel.first;
         }
     }
     
-    bool openVoice = ImGui::CollapsingHeader("VOICE CHANNELS", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowItemOverlap);
+    bool isVoiceSectionOpen = ImGui::CollapsingHeader("VOICE CHANNELS", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowItemOverlap);
     ImGui::SameLine(ImGui::GetWindowWidth() - 40);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0,0,0,0));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     if (ImGui::Button("+##voice_add")) ImGui::OpenPopup("Add Voice Channel");
     ImGui::PopStyleColor();
 
-    if (ImGui::BeginPopupModal("Add Voice Channel", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static char vnameBuf[64] = "";
-        ImGui::InputText("Name", vnameBuf, 64);
-        if (ImGui::Button("Create", ImVec2(120, 0))) {
-            if (strlen(vnameBuf) > 0) {
+    if (ImGui::BeginPopupModal("Add Voice Channel", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        static char voiceChannelNameBuffer[64] = "";
+        ImGui::InputText("Name", voiceChannelNameBuffer, 64);
+        if (ImGui::Button("Create", ImVec2(120, 0)))
+        {
+            if (strlen(voiceChannelNameBuffer) > 0)
+            {
                 std::lock_guard<std::mutex> lock(m_channelsMutex);
-                m_pendingNewVoiceChannels.push(vnameBuf);
-                std::memset(vnameBuf, 0, sizeof(vnameBuf));
+                m_pendingNewVoiceChannels.push(voiceChannelNameBuffer);
+                std::memset(voiceChannelNameBuffer, 0, sizeof(voiceChannelNameBuffer));
                 ImGui::CloseCurrentPopup();
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 
-    if (openVoice) 
+    if (isVoiceSectionOpen) 
     {
-        for (const auto& ch : voiceChans) {
-            std::string label = std::string(ICON_FA_VOLUME_HIGH) + " " + ch.second;
-            if (m_activeVoiceChannelId == ch.first) label += " (Connected)";
+        for (const auto& channel : voiceChannels)
+        {
+            std::string channelLabel = std::string(ICON_FA_VOLUME_HIGH) + " " + channel.second;
+            if (m_activeVoiceChannelId == channel.first) channelLabel += " (Connected)";
             
-            if (ImGui::Selectable(label.c_str(), m_activeVoiceChannelId == ch.first)) {
-                m_activeVoiceChannelId = ch.first;
+            if (ImGui::Selectable(channelLabel.c_str(), m_activeVoiceChannelId == channel.first))
+            {
+                m_activeVoiceChannelId = channel.first;
             }
             
-            if (m_activeVoiceChannelId == ch.first) 
+            if (m_activeVoiceChannelId == channel.first) 
             {
                 ImGui::Indent();
                 {
                     std::lock_guard<std::mutex> lock(m_peersMutex);
-                    auto now = std::chrono::steady_clock::now();
+                    auto currentTime = std::chrono::steady_clock::now();
                     for (const auto& peer : m_voicePeers) 
                     {
                         bool isSpeaking = m_speakerActivity.count(peer.uuid) && 
-                                          std::chrono::duration_cast<std::chrono::milliseconds>(now - m_speakerActivity[peer.uuid]).count() < 300;
+                                          std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_speakerActivity[peer.uuid]).count() < 300;
                         
-                        ImVec4 color = isSpeaking ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+                        ImVec4 peerColor = isSpeaking ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
                         
-                        std::string badges = "";
-                        if (peer.isMuted) badges += std::string(" ") + ICON_FA_MICROPHONE_SLASH;
-                        if (peer.isDeafened) badges += std::string(" ") + ICON_FA_HEADPHONES;
+                        std::string statusBadges = "";
+                        if (peer.isMuted) statusBadges += std::string(" ") + ICON_FA_MICROPHONE_SLASH;
+                        if (peer.isDeafened) statusBadges += std::string(" ") + ICON_FA_HEADPHONES;
                         
-                        ImGui::TextColored(color, "  %s%s", peer.username.c_str(), badges.c_str());
+                        ImGui::TextColored(peerColor, "  %s%s", peer.username.c_str(), statusBadges.c_str());
                     }
                     
                     if (m_voicePeers.empty() && m_isLoggedIn) 
@@ -250,7 +260,8 @@ void WindowManager::render()
                 
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
-                if (ImGui::Button("Leave VC", ImVec2(ImGui::GetContentRegionAvail().x, 24))) {
+                if (ImGui::Button("Leave VC", ImVec2(ImGui::GetContentRegionAvail().x, 24)))
+                {
                     m_activeVoiceChannelId = -1;
                 }
                 ImGui::PopStyleColor(2);
@@ -262,34 +273,37 @@ void WindowManager::render()
     ImGui::PopStyleVar();
     ImGui::EndChild();
     
-    // Panel B: User Controls
+    // User Controls Panel
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.137f, 0.141f, 0.157f, 1.000f)); // #232428
-    ImGui::BeginChild("PanelB", ImVec2(sidebarWidth, userPanelHeight), false);
+    ImGui::BeginChild("UserControlsPanel", ImVec2(sidebarWidth, userPanelHeight), false);
     
     ImGui::SetCursorPos(ImVec2(10, 12));
     ImGui::Text("%s", m_isLoggedIn ? m_username.c_str() : "Logging in...");
     ImGui::SetCursorPos(ImVec2(10, 30));
-    if (m_activeVoiceChannelId.load() >= 0) {
+    if (m_activeVoiceChannelId.load() >= 0)
+    {
         ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Voice Connected");
-    } else {
+    }
+    else
+    {
         ImGui::TextDisabled("Voice Disconnected");
     }
 
     ImGui::SetCursorPos(ImVec2(sidebarWidth - 110, 15));
     
     // Toggle Buttons
-    bool isMutedVar = m_isMuted.load();
-    if (ImGui::Button(isMutedVar ? "Unmute" : "Mute", ImVec2(45, 30))) 
+    bool currentlyMuted = m_isMuted.load();
+    if (ImGui::Button(currentlyMuted ? "Unmute" : "Mute", ImVec2(45, 30))) 
     {
-        m_isMuted.store(!isMutedVar);
+        m_isMuted.store(!currentlyMuted);
     }
     
     ImGui::SameLine();
-    bool isDeafenedVar = m_isDeafened.load();
-    if (ImGui::Button(isDeafenedVar ? "Undeaf" : "Deaf", ImVec2(45, 30))) 
+    bool currentlyDeafened = m_isDeafened.load();
+    if (ImGui::Button(currentlyDeafened ? "Undeaf" : "Deaf", ImVec2(45, 30))) 
     {
-        m_isDeafened.store(!isDeafenedVar);
-        if (!isDeafenedVar) 
+        m_isDeafened.store(!currentlyDeafened);
+        if (!currentlyDeafened) 
         {
             m_isMuted.store(true);
         }
@@ -300,20 +314,22 @@ void WindowManager::render()
     
     ImGui::EndChild(); // End LeftColumn
 
-    // --- RIGHT COLUMN (Panel C) ---
+    // --- RIGHT COLUMN (Chat Area) ---
     ImGui::SameLine();
     ImGui::BeginChild("RightColumn", ImVec2(chatAreaWidth, viewport->WorkSize.y), false);
     
-    // Panel C Top Header
+    // Chat Area Top Header
     ImGui::SetCursorPos(ImVec2(15, 10));
-    std::string headerName = "# unknown";
-    for (const auto& ch : textChans) {
-        if (ch.first == m_selectedTextChannelId.load()) {
-            headerName = std::string(ICON_FA_HASHTAG) + " " + ch.second;
+    std::string channelHeaderName = "# unknown";
+    for (const auto& channel : textChannels)
+    {
+        if (channel.first == m_selectedTextChannelId.load())
+        {
+            channelHeaderName = std::string(ICON_FA_HASHTAG) + " " + channel.second;
             break;
         }
     }
-    ImGui::TextDisabled("%s", headerName.c_str());
+    ImGui::TextDisabled("%s", channelHeaderName.c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("| Text chat channel");
     
@@ -323,16 +339,16 @@ void WindowManager::render()
     // Message History Area
     const float chatInputHeight = 50.0f;
     ImGui::BeginChild("ChatHistory", ImVec2(0, viewport->WorkSize.y - chatInputHeight - 50.0f), false);
-    for (const auto& msg : m_chatHistory) 
+    for (const auto& message : m_chatHistory) 
     {
         ImGui::SetCursorPosX(15);
-        ImGui::TextWrapped("%s", msg.c_str());
+        ImGui::TextWrapped("%s", message.c_str());
     }
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
         ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
     
-    // Chat Input box
+    // Chat Input Box
     ImGui::SetCursorPos(ImVec2(15, viewport->WorkSize.y - chatInputHeight - 5.0f));
     ImGui::PushItemWidth(chatAreaWidth - 30);
     if (ImGui::InputText("##ChatInput", m_chatInputBuffer, IM_ARRAYSIZE(m_chatInputBuffer), ImGuiInputTextFlags_EnterReturnsTrue)) 
@@ -353,15 +369,15 @@ void WindowManager::render()
 
     if (m_showSettingsModal) 
     {
-        // Placeholder Settings Modal for phase 1.
+        // Placeholder Settings Modal
     }
 
     renderLoginModal();
 
     ImGui::Render();
-    int display_w, display_h;
-    glfwGetFramebufferSize(m_window, &display_w, &display_h);
-    glViewport(0, 0, display_w, display_h);
+    int displayWidth, displayHeight;
+    glfwGetFramebufferSize(m_window, &displayWidth, &displayHeight);
+    glViewport(0, 0, displayWidth, displayHeight);
     glClearColor(0.192f, 0.200f, 0.220f, 1.000f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -447,10 +463,11 @@ int WindowManager::getActiveVoiceChannelId() const
 std::string WindowManager::getPendingNewTextChannel()
 {
     std::lock_guard<std::mutex> lock(m_channelsMutex);
-    if (!m_pendingNewTextChannels.empty()) {
-        std::string ch = m_pendingNewTextChannels.front();
+    if (!m_pendingNewTextChannels.empty())
+    {
+        std::string channelName = m_pendingNewTextChannels.front();
         m_pendingNewTextChannels.pop();
-        return ch;
+        return channelName;
     }
     return "";
 }
@@ -458,19 +475,20 @@ std::string WindowManager::getPendingNewTextChannel()
 std::string WindowManager::getPendingNewVoiceChannel()
 {
     std::lock_guard<std::mutex> lock(m_channelsMutex);
-    if (!m_pendingNewVoiceChannels.empty()) {
-        std::string ch = m_pendingNewVoiceChannels.front();
+    if (!m_pendingNewVoiceChannels.empty())
+    {
+        std::string channelName = m_pendingNewVoiceChannels.front();
         m_pendingNewVoiceChannels.pop();
-        return ch;
+        return channelName;
     }
     return "";
 }
 
-void WindowManager::setChannels(const std::vector<std::pair<int, std::string>>& textChans, const std::vector<std::pair<int, std::string>>& voiceChans)
+void WindowManager::setChannels(const std::vector<std::pair<int, std::string>>& textChannels, const std::vector<std::pair<int, std::string>>& voiceChannels)
 {
     std::lock_guard<std::mutex> lock(m_channelsMutex);
-    m_textChannelsList = textChans;
-    m_voiceChannelsList = voiceChans;
+    m_textChannelsList = textChannels;
+    m_voiceChannelsList = voiceChannels;
 }
 
 std::string WindowManager::getUsername() const 
@@ -478,47 +496,49 @@ std::string WindowManager::getUsername() const
     return m_username;
 }
 
-void WindowManager::addIncomingMessage(const std::string& msg) 
+void WindowManager::addIncomingMessage(const std::string& message) 
 {
     std::lock_guard<std::mutex> lock(m_chatMutex);
-    m_chatHistory.push_back(msg);
+    m_chatHistory.push_back(message);
 }
 
-void WindowManager::setChatHistory(const std::vector<std::string>& msgs) 
+void WindowManager::setChatHistory(const std::vector<std::string>& messages) 
 {
     std::lock_guard<std::mutex> lock(m_chatMutex);
-    m_chatHistory = msgs;
+    m_chatHistory = messages;
 }
 
 std::string WindowManager::getPendingOutgoingMessage() 
 {
     std::lock_guard<std::mutex> lock(m_chatMutex);
-    if (!m_outgoingMessages.empty()) {
-        std::string msg = m_outgoingMessages.front();
+    if (!m_outgoingMessages.empty())
+    {
+        std::string message = m_outgoingMessages.front();
         m_outgoingMessages.pop();
-        return msg;
+        return message;
     }
     return "";
 }
 
-void WindowManager::setVoicePeers(const std::vector<std::string>& peers) 
+void WindowManager::setVoicePeers(const std::vector<std::string>& peerDataList) 
 {
     std::lock_guard<std::mutex> lock(m_peersMutex);
     m_voicePeers.clear();
-    for (const auto& p : peers) {
-        // Parse username:isMuted:isDeafened:id
-        size_t id1 = p.find(':');
-        if (id1 == std::string::npos) continue;
-        size_t id2 = p.find(':', id1 + 1);
-        if (id2 == std::string::npos) continue;
-        size_t id3 = p.find(':', id2 + 1);
-        if (id3 == std::string::npos) continue;
+    for (const auto& peerEntry : peerDataList)
+    {
+        // Parse format: username:isMuted:isDeafened:uuid
+        size_t firstColon = peerEntry.find(':');
+        if (firstColon == std::string::npos) continue;
+        size_t secondColon = peerEntry.find(':', firstColon + 1);
+        if (secondColon == std::string::npos) continue;
+        size_t thirdColon = peerEntry.find(':', secondColon + 1);
+        if (thirdColon == std::string::npos) continue;
         
         VoicePeer peer;
-        peer.username = p.substr(0, id1);
-        peer.isMuted = (p.substr(id1 + 1, id2 - id1 - 1) == "1");
-        peer.isDeafened = (p.substr(id2 + 1, id3 - id2 - 1) == "1");
-        peer.uuid = p.substr(id3 + 1);
+        peer.username = peerEntry.substr(0, firstColon);
+        peer.isMuted = (peerEntry.substr(firstColon + 1, secondColon - firstColon - 1) == "1");
+        peer.isDeafened = (peerEntry.substr(secondColon + 1, thirdColon - secondColon - 1) == "1");
+        peer.uuid = peerEntry.substr(thirdColon + 1);
         m_voicePeers.push_back(peer);
     }
 }

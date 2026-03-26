@@ -66,8 +66,9 @@ void Application::runMainLoop(const std::string& targetIp)
         std::cout << "Starting Server Engine..." << std::endl;
         m_networkThread = std::thread(&Application::serverThreadLoop, this);
         
-        while (m_isRunning) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Headless server
+        while (m_isRunning)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     } 
     else 
@@ -76,7 +77,8 @@ void Application::runMainLoop(const std::string& targetIp)
         std::cout << "Starting Client Engine targeting: " << targetIp << std::endl;
         m_networkThread = std::thread(&Application::clientThreadLoop, this, targetIp);
 
-        while (m_isRunning && !m_windowManager.shouldClose()) {
+        while (m_isRunning && !m_windowManager.shouldClose())
+        {
             m_windowManager.render();
         }
 
@@ -103,115 +105,135 @@ void Application::serverThreadLoop()
     };
     std::map<std::string, ClientProfile> clientMap;
     
-    auto tcpHandler = [this, &clientMap](const std::string& incomingIp, const std::string& payload) -> std::string {
-        std::istringstream iss(payload);
-        std::string type, uuid;
-        std::getline(iss, type, '|');
-        std::getline(iss, uuid, '|');
+    auto tcpHandler = [this, &clientMap](const std::string& incomingIp, const std::string& payload) -> std::string
+    {
+        std::istringstream payloadStream(payload);
+        std::string messageType, senderUuid;
+        std::getline(payloadStream, messageType, '|');
+        std::getline(payloadStream, senderUuid, '|');
         
-        if (type == "LOGIN") 
+        if (messageType == "LOGIN") 
         {
-            std::string user;
-            std::getline(iss, user);
-            clientMap[uuid] = {user, 0, false, false, incomingIp + ":50000"}; // Default 50000 
-            std::cout << "User logged in: " << user << std::endl;
+            std::string username;
+            std::getline(payloadStream, username);
+            clientMap[senderUuid] = {username, 0, false, false, incomingIp + ":50000"};
+            std::cout << "User logged in: " << username << std::endl;
         }
-        else if (type == "STATE") 
+        else if (messageType == "STATE") 
         {
-            std::string channelStr, mutedStr, deafStr;
-            std::getline(iss, channelStr, '|');
-            std::getline(iss, mutedStr, '|');
-            std::getline(iss, deafStr, '|');
-            if (clientMap.find(uuid) != clientMap.end()) {
-                clientMap[uuid].activeChannelId = std::stoi(channelStr);
-                clientMap[uuid].isMuted = (mutedStr == "1");
-                clientMap[uuid].isDeafened = (deafStr == "1");
+            std::string channelIdString, mutedString, deafenedString;
+            std::getline(payloadStream, channelIdString, '|');
+            std::getline(payloadStream, mutedString, '|');
+            std::getline(payloadStream, deafenedString, '|');
+            if (clientMap.find(senderUuid) != clientMap.end())
+            {
+                clientMap[senderUuid].activeChannelId = std::stoi(channelIdString);
+                clientMap[senderUuid].isMuted = (mutedString == "1");
+                clientMap[senderUuid].isDeafened = (deafenedString == "1");
             }
         }
-        else if (type == "CHAT") 
+        else if (messageType == "CHAT") 
         {
-            std::string channelStr, message;
-            std::getline(iss, channelStr, '|');
-            std::getline(iss, message);
-            int cId = std::stoi(channelStr);
-            std::string user = clientMap.count(uuid) ? clientMap[uuid].username : "Unknown";
-            if (m_dbManager) m_dbManager->storeMessage(cId, uuid, user, message);
+            std::string channelIdString, message;
+            std::getline(payloadStream, channelIdString, '|');
+            std::getline(payloadStream, message);
+            int channelId = std::stoi(channelIdString);
+            std::string username = clientMap.count(senderUuid) ? clientMap[senderUuid].username : "Unknown";
+            if (m_dbManager) m_dbManager->storeMessage(channelId, senderUuid, username, message);
             return "ACK";
         }
-        else if (type == "POLL_CHAT") 
+        else if (messageType == "POLL_CHAT") 
         {
-            std::string channelStr;
-            std::getline(iss, channelStr, '|');
-            int cId = std::stoi(channelStr);
-            std::string chatResp = "CHAT_LOG|";
-            if (m_dbManager) {
-                auto history = m_dbManager->fetchLastMessages(cId, 50);
-                for (const auto& msg : history) {
-                    chatResp += msg.username + ": " + msg.message + "\n";
+            std::string channelIdString;
+            std::getline(payloadStream, channelIdString, '|');
+            int channelId = std::stoi(channelIdString);
+            std::string chatResponse = "CHAT_LOG|";
+            if (m_dbManager)
+            {
+                auto history = m_dbManager->fetchLastMessages(channelId, 50);
+                for (const auto& chatMessage : history)
+                {
+                    chatResponse += chatMessage.username + ": " + chatMessage.message + "\n";
                 }
             }
-            return chatResp;
+            return chatResponse;
         }
-        else if (type == "SYNC_CHANNELS") {
-            std::string resp = "CHANNELS|";
-            if (m_dbManager) {
-                auto txt = m_dbManager->fetchTextChannels();
-                resp += "TEXT:";
-                for (const auto& c : txt) resp += std::to_string(c.id) + "=" + c.name + ",";
-                resp += "|VOICE:";
-                auto vc = m_dbManager->fetchVoiceChannels();
-                for (const auto& c : vc) resp += std::to_string(c.id) + "=" + c.name + ",";
+        else if (messageType == "SYNC_CHANNELS")
+        {
+            std::string response = "CHANNELS|";
+            if (m_dbManager)
+            {
+                auto textChannels = m_dbManager->fetchTextChannels();
+                response += "TEXT:";
+                for (const auto& channel : textChannels)
+                {
+                    response += std::to_string(channel.id) + "=" + channel.name + ",";
+                }
+                response += "|VOICE:";
+                auto voiceChannels = m_dbManager->fetchVoiceChannels();
+                for (const auto& channel : voiceChannels)
+                {
+                    response += std::to_string(channel.id) + "=" + channel.name + ",";
+                }
             }
-            return resp;
+            return response;
         }
-        else if (type == "NEW_TEXT_CHAN") {
-            std::string name;
-            std::getline(iss, name);
-            if (m_dbManager) m_dbManager->addTextChannel(name);
+        else if (messageType == "NEW_TEXT_CHAN")
+        {
+            std::string channelName;
+            std::getline(payloadStream, channelName);
+            if (m_dbManager) m_dbManager->addTextChannel(channelName);
             return "ACK";
         }
-        else if (type == "NEW_VOICE_CHAN") {
-            std::string name;
-            std::getline(iss, name);
-            if (m_dbManager) m_dbManager->addVoiceChannel(name);
+        else if (messageType == "NEW_VOICE_CHAN")
+        {
+            std::string channelName;
+            std::getline(payloadStream, channelName);
+            if (m_dbManager) m_dbManager->addVoiceChannel(channelName);
             return "ACK";
         }
         
-        std::string peersResp = "PEERS|";
+        std::string peersResponse = "PEERS|";
         int requesterChannel = -1;
-        if (clientMap.count(uuid)) {
-            requesterChannel = clientMap[uuid].activeChannelId;
+        if (clientMap.count(senderUuid))
+        {
+            requesterChannel = clientMap[senderUuid].activeChannelId;
         }
-        if (requesterChannel != -1) {
-            for (const auto& [id, profile] : clientMap) {
-                if (profile.activeChannelId == requesterChannel) {
-                    peersResp += profile.username + ":" + (profile.isMuted ? "1" : "0") + ":" + (profile.isDeafened ? "1" : "0") + ":" + id + ",";
+        if (requesterChannel != -1)
+        {
+            for (const auto& [clientUuid, profile] : clientMap)
+            {
+                if (profile.activeChannelId == requesterChannel)
+                {
+                    peersResponse += profile.username + ":" + (profile.isMuted ? "1" : "0") + ":" + (profile.isDeafened ? "1" : "0") + ":" + clientUuid + ",";
                 }
             }
         }
-        return peersResp;
+        return peersResponse;
     };
 
     while (m_isRunning)
     {
         m_networkManager.pollTcpConnections(tcpHandler);
         
-        NetworkPacket pack = m_networkManager.receiveAudioPacket();
-        if (!pack.payload.empty() && !pack.senderIp.empty()) 
+        NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+        if (!incomingPacket.payload.empty() && !incomingPacket.senderIp.empty()) 
         {
-            if (pack.payload.size() > 36) 
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        if (incomingPacket.payload.size() > 36) 
+        {
+            std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), 36);
+            if (clientMap.count(packetSenderUuid)) 
             {
-                std::string packUuid(reinterpret_cast<char*>(pack.payload.data()), 36);
-                if (clientMap.count(packUuid)) 
+                clientMap[packetSenderUuid].latestUdpEndpoint = incomingPacket.senderIp;
+                int senderChannel = clientMap[packetSenderUuid].activeChannelId;
+                for (const auto& [otherUuid, profile] : clientMap) 
                 {
-                    clientMap[packUuid].latestUdpEndpoint = pack.senderIp;
-                    int channel = clientMap[packUuid].activeChannelId;
-                    for (const auto& [otherUuid, profile] : clientMap) 
+                    if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && !profile.latestUdpEndpoint.empty()) 
                     {
-                        if (otherUuid != packUuid && profile.activeChannelId == channel && !profile.latestUdpEndpoint.empty()) 
-                        {
-                            m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, pack.payload);
-                        }
+                        m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, incomingPacket.payload);
                     }
                 }
             }
@@ -222,118 +244,130 @@ void Application::serverThreadLoop()
 
 void Application::clientThreadLoop(const std::string& serverIp)
 {
-    std::string myUuid = Utils::getHardwareUUID();
-    bool loggedInSent = false;
-    long lastSyncTime = 0; 
-    int lastTextChannelId = -1;
+    std::string localUuid = Utils::getHardwareUUID();
+    bool hasLoggedIn = false;
+    long syncTimer = 0; 
+    int previousTextChannelId = -1;
     
     while (m_isRunning)
     {
         if (m_windowManager.isLoggedIn()) 
         {
-            std::string myUser = m_windowManager.getUsername();
-            int currentTextChannel = m_windowManager.getSelectedTextChannelId();
+            std::string localUsername = m_windowManager.getUsername();
+            int currentTextChannelId = m_windowManager.getSelectedTextChannelId();
             
-            if (currentTextChannel != lastTextChannelId) 
+            if (currentTextChannelId != previousTextChannelId) 
             {
-                lastSyncTime = 1000;
-                lastTextChannelId = currentTextChannel;
+                syncTimer = 1000;
+                previousTextChannelId = currentTextChannelId;
             }
             
-            if (!loggedInSent) 
+            if (!hasLoggedIn) 
             {
-                m_networkManager.sendSynchronousTcp(serverIp, "LOGIN|" + myUuid + "|" + myUser);
-                loggedInSent = true;
+                m_networkManager.sendSynchronousTcp(serverIp, "LOGIN|" + localUuid + "|" + localUsername);
+                hasLoggedIn = true;
             }
             
-            std::string outgoingMsg = m_windowManager.getPendingOutgoingMessage();
-            if (!outgoingMsg.empty()) 
+            std::string outgoingMessage = m_windowManager.getPendingOutgoingMessage();
+            if (!outgoingMessage.empty()) 
             {
-                m_networkManager.sendSynchronousTcp(serverIp, "CHAT|" + myUuid + "|" + std::to_string(currentTextChannel) + "|" + outgoingMsg);
-                lastSyncTime = 1000; 
+                m_networkManager.sendSynchronousTcp(serverIp, "CHAT|" + localUuid + "|" + std::to_string(currentTextChannelId) + "|" + outgoingMessage);
+                syncTimer = 1000; 
             }
 
-            std::string newTextCh = m_windowManager.getPendingNewTextChannel();
-            if (!newTextCh.empty()) m_networkManager.sendSynchronousTcp(serverIp, "NEW_TEXT_CHAN|" + myUuid + "|" + newTextCh);
+            std::string pendingNewTextChannel = m_windowManager.getPendingNewTextChannel();
+            if (!pendingNewTextChannel.empty()) m_networkManager.sendSynchronousTcp(serverIp, "NEW_TEXT_CHAN|" + localUuid + "|" + pendingNewTextChannel);
             
-            std::string newVoiceCh = m_windowManager.getPendingNewVoiceChannel();
-            if (!newVoiceCh.empty()) m_networkManager.sendSynchronousTcp(serverIp, "NEW_VOICE_CHAN|" + myUuid + "|" + newVoiceCh);
+            std::string pendingNewVoiceChannel = m_windowManager.getPendingNewVoiceChannel();
+            if (!pendingNewVoiceChannel.empty()) m_networkManager.sendSynchronousTcp(serverIp, "NEW_VOICE_CHAN|" + localUuid + "|" + pendingNewVoiceChannel);
             
-            if (lastSyncTime > 500) 
+            if (syncTimer > 500) 
             {
-                int activeVoiceChannel = m_windowManager.getActiveVoiceChannelId();
-                std::string statePayload = "STATE|" + myUuid + "|" + std::to_string(activeVoiceChannel) + "|" + 
+                int activeVoiceChannelId = m_windowManager.getActiveVoiceChannelId();
+                std::string statePayload = "STATE|" + localUuid + "|" + std::to_string(activeVoiceChannelId) + "|" + 
                     (m_windowManager.isMuted() ? "1" : "0") + "|" + 
                     (m_windowManager.isDeafened() ? "1" : "0");
                 
-                std::string peerResp = m_networkManager.sendSynchronousTcp(serverIp, statePayload);
-                if (peerResp.find("PEERS|") == 0) 
+                std::string peersResponse = m_networkManager.sendSynchronousTcp(serverIp, statePayload);
+                if (peersResponse.find("PEERS|") == 0) 
                 {
-                    std::vector<std::string> peers;
-                    std::istringstream iss(peerResp.substr(6));
-                    std::string p;
-                    while(std::getline(iss, p, ',')) { if (!p.empty()) peers.push_back(p); }
-                    m_windowManager.setVoicePeers(peers);
+                    std::vector<std::string> peersList;
+                    std::istringstream peersStream(peersResponse.substr(6));
+                    std::string peerEntry;
+                    while (std::getline(peersStream, peerEntry, ','))
+                    {
+                        if (!peerEntry.empty()) peersList.push_back(peerEntry);
+                    }
+                    m_windowManager.setVoicePeers(peersList);
                 }
                 
-                std::string chatResp = m_networkManager.sendSynchronousTcp(serverIp, "POLL_CHAT|" + myUuid + "|" + std::to_string(currentTextChannel) + "|");
-                if (chatResp.find("CHAT_LOG|") == 0) 
+                std::string chatResponse = m_networkManager.sendSynchronousTcp(serverIp, "POLL_CHAT|" + localUuid + "|" + std::to_string(currentTextChannelId) + "|");
+                if (chatResponse.find("CHAT_LOG|") == 0) 
                 {
-                    std::vector<std::string> history;
-                    std::istringstream iss(chatResp.substr(9));
-                    std::string line;
-                    while(std::getline(iss, line, '\n')) { if (!line.empty()) history.push_back(line); }
-                    m_windowManager.setChatHistory(history);
+                    std::vector<std::string> chatHistory;
+                    std::istringstream chatStream(chatResponse.substr(9));
+                    std::string chatLine;
+                    while (std::getline(chatStream, chatLine, '\n'))
+                    {
+                        if (!chatLine.empty()) chatHistory.push_back(chatLine);
+                    }
+                    m_windowManager.setChatHistory(chatHistory);
                 }
                 
-                std::string chanResp = m_networkManager.sendSynchronousTcp(serverIp, "SYNC_CHANNELS|");
-                if (chanResp.find("CHANNELS|") == 0) {
-                    chanResp = chanResp.substr(9);
-                    size_t pipePos = chanResp.find('|');
-                    if (pipePos != std::string::npos) {
-                        std::string textPart = chanResp.substr(0, pipePos);
-                        std::string voicePart = chanResp.substr(pipePos + 1);
+                std::string channelsResponse = m_networkManager.sendSynchronousTcp(serverIp, "SYNC_CHANNELS|");
+                if (channelsResponse.find("CHANNELS|") == 0)
+                {
+                    channelsResponse = channelsResponse.substr(9);
+                    size_t pipePosition = channelsResponse.find('|');
+                    if (pipePosition != std::string::npos)
+                    {
+                        std::string textPart = channelsResponse.substr(0, pipePosition);
+                        std::string voicePart = channelsResponse.substr(pipePosition + 1);
                         
-                        auto parseChannels = [](const std::string& str, const std::string& prefix) {
-                            std::vector<std::pair<int, std::string>> res;
-                            if (str.find(prefix) == 0) {
-                                std::istringstream iss(str.substr(prefix.length()));
+                        auto parseChannels = [](const std::string& rawString, const std::string& prefix)
+                        {
+                            std::vector<std::pair<int, std::string>> parsedChannels;
+                            if (rawString.find(prefix) == 0)
+                            {
+                                std::istringstream tokenStream(rawString.substr(prefix.length()));
                                 std::string token;
-                                while (std::getline(iss, token, ',')) {
+                                while (std::getline(tokenStream, token, ','))
+                                {
                                     if (token.empty()) continue;
-                                    size_t eqPos = token.find('=');
-                                    if (eqPos != std::string::npos) {
-                                        res.push_back({std::stoi(token.substr(0, eqPos)), token.substr(eqPos + 1)});
+                                    size_t equalsPosition = token.find('=');
+                                    if (equalsPosition != std::string::npos)
+                                    {
+                                        parsedChannels.push_back({std::stoi(token.substr(0, equalsPosition)), token.substr(equalsPosition + 1)});
                                     }
                                 }
                             }
-                            return res;
+                            return parsedChannels;
                         };
                         
                         m_windowManager.setChannels(parseChannels(textPart, "TEXT:"), parseChannels(voicePart, "VOICE:"));
                     }
                 }
                 
-                lastSyncTime = 0;
+                syncTimer = 0;
             }
-            lastSyncTime++;
+            syncTimer++;
             
             std::vector<uint8_t> outgoingAudio = m_audioEngine.getOutgoingPacket();
             if (!outgoingAudio.empty() && !m_windowManager.isMuted() && !m_windowManager.isDeafened()) 
             {
-                std::vector<uint8_t> sfuPacket(myUuid.begin(), myUuid.end());
+                std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
                 sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
                 m_networkManager.sendAudioPacket(serverIp, sfuPacket);
             }
             
-            NetworkPacket pack = m_networkManager.receiveAudioPacket();
-            if (!pack.payload.empty() && pack.payload.size() > 36 && !m_windowManager.isDeafened()) 
+            NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+            if (!incomingPacket.payload.empty() && incomingPacket.payload.size() > 36 && !m_windowManager.isDeafened()) 
             {
-                std::string sip_uuid(reinterpret_cast<char*>(pack.payload.data()), 36);
-                m_windowManager.markSpeakerActive(sip_uuid);
+                std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), 36);
+                m_windowManager.markSpeakerActive(senderUuid);
                 
-                std::vector<uint8_t> opusOnly(pack.payload.begin() + 36, pack.payload.end());
-                m_audioEngine.pushIncomingPacket(opusOnly);
+                std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + 36, incomingPacket.payload.end());
+                m_audioEngine.pushIncomingPacket(opusAudioData);
             }
         }
         
