@@ -4,16 +4,37 @@
 
 int main(int argc, char* argv[])
 {
-    if (argc < 2)
+    bool isServerMode = false;
+    std::string targetIp = "127.0.0.1";
+
+    if (argc >= 2)
     {
-        std::cerr << "Usage: VoiceChatApp <TargetTailscaleIP>" << std::endl;
-        return 1;
+        std::string modeArg = argv[1];
+        if (modeArg == "--server")
+        {
+            isServerMode = true;
+        }
+        else if (modeArg == "--client")
+        {
+            if (argc >= 3)
+            {
+                targetIp = argv[2];
+            }
+            else
+            {
+                std::cerr << "Usage for client: VoiceChatApp --client <ServerIp>\n";
+                return 1;
+            }
+        }
+        else
+        {
+            targetIp = modeArg;
+        }
     }
 
-    std::string targetIp = argv[1];
     Application mainApp;
 
-    if (!mainApp.initialize())
+    if (!mainApp.initialize(isServerMode))
     {
         std::cerr << "Failed to initialize application." << std::endl;
         return 1;

@@ -37,6 +37,7 @@ set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
 
 find_package(OpenGL REQUIRED)
+find_package(SQLite3 REQUIRED)
 
 # ------------------------------------------------------------------------------
 # Core Application Setup
@@ -49,6 +50,7 @@ set(SOURCES
     src/Network/TailscaleNetwork.cpp
     src/Audio/AudioEngine.cpp
     src/UI/WindowManager.cpp
+    src/Database/DatabaseManager.cpp
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_demo.cpp
     third_party/imgui/imgui_draw.cpp
@@ -92,6 +94,7 @@ if(UNIX AND NOT APPLE)
         glfw
         OpenGL::GL
         dl
+        SQLite::SQLite3
     )
 
 elseif(WIN32)
@@ -110,8 +113,17 @@ elseif(WIN32)
         opus
         glfw
         OpenGL::GL
+        SQLite::SQLite3
     )
 endif()
+
+# Copy assets folder to output directory
+add_custom_command(TARGET VoiceChatApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/assets"
+        "$<TARGET_FILE_DIR:VoiceChatApp>/assets"
+)
+
 # ------------------------------------------------------------------------------
 # Post-Build Automation (Windows Only)
 # ------------------------------------------------------------------------------
