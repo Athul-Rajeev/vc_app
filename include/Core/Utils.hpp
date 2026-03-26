@@ -25,19 +25,21 @@ inline std::string generateRandomUUID()
     return std::string(uuidBuffer);
 }
 
+inline std::string formatToUUID(const std::string& input)
+{
+    if (input.length() != 32) return input;
+    return input.substr(0, 8) + "-" +
+           input.substr(8, 4) + "-" +
+           input.substr(12, 4) + "-" +
+           input.substr(16, 4) + "-" +
+           input.substr(20);
+}
+
 inline std::string getHardwareUUID()
 {
     std::string uuid;
-    std::ifstream machineIdFile("/etc/machine-id");
-    if (machineIdFile.is_open())
-    {
-        std::getline(machineIdFile, uuid);
-        if (!uuid.empty())
-        {
-            return uuid;
-        }
-    }
-
+    
+    // 1. Try to read from cache file first
     std::ifstream cachedUuidFile(".voicechat_uuid");
     if (cachedUuidFile.is_open())
     {
@@ -48,7 +50,25 @@ inline std::string getHardwareUUID()
         }
     }
 
-    uuid = generateRandomUUID();
+    // 2. Try to read from system machine-id
+    std::ifstream machineIdFile("/etc/machine-id");
+    if (machineIdFile.is_open())
+    {
+        std::string rawId;
+        std::getline(machineIdFile, rawId);
+        if (!rawId.empty())
+        {
+            uuid = formatToUUID(rawId);
+        }
+    }
+
+    // 3. Fallback to random if still empty
+    if (uuid.empty())
+    {
+        uuid = generateRandomUUID();
+    }
+
+    // 4. Always ensure the resulting UUID is cached to .voicechat_uuid
     std::ofstream newCachedUuidFile(".voicechat_uuid");
     if (newCachedUuidFile.is_open())
     {
