@@ -12,7 +12,10 @@ public:
 
     void setProvider(INetworkProvider* networkProvider);
     void sendAudioPacket(const std::string& targetIp, const std::vector<uint8_t>& packetData);
-    std::vector<uint8_t> receiveAudioPacket();
+    NetworkPacket receiveAudioPacket();
+
+    std::string sendSynchronousTcp(const std::string& targetIp, const std::string& payload);
+    void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler);
 
 private:
     INetworkProvider* m_activeProvider;

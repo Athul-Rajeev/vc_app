@@ -22,12 +22,29 @@ void NetworkManager::sendAudioPacket(const std::string& targetIp, const std::vec
     }
 }
 
-std::vector<uint8_t> NetworkManager::receiveAudioPacket()
+NetworkPacket NetworkManager::receiveAudioPacket()
 {
     if (m_activeProvider != nullptr)
     {
         return m_activeProvider->receiveData();
     }
     
-    return std::vector<uint8_t>();
+    return NetworkPacket{"", std::vector<uint8_t>()};
+}
+
+std::string NetworkManager::sendSynchronousTcp(const std::string& targetIp, const std::string& payload)
+{
+    if (m_activeProvider != nullptr)
+    {
+        return m_activeProvider->sendSynchronousTcp(targetIp, payload);
+    }
+    return "";
+}
+
+void NetworkManager::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
+{
+    if (m_activeProvider != nullptr)
+    {
+        m_activeProvider->pollTcpConnections(requestHandler);
+    }
 }

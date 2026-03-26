@@ -5,6 +5,7 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 #include <GLFW/glfw3.h>
+#include "Core/Utils.hpp"
 
 WindowManager::WindowManager()
     : m_window(nullptr),
@@ -12,10 +13,17 @@ WindowManager::WindowManager()
       m_activeVoiceChannelId(-1),
       m_isMuted(false),
       m_isDeafened(false),
-      m_showSettingsModal(false)
+      m_showSettingsModal(false),
+      m_isLoggedIn(false)
 {
     std::memset(m_chatInputBuffer, 0, sizeof(m_chatInputBuffer));
+    std::memset(m_usernameInputBuffer, 0, sizeof(m_usernameInputBuffer));
     m_chatHistory.push_back("System: Welcome to the server!");
+    
+    m_username = Utils::getSavedUsername();
+    if (!m_username.empty()) {
+        m_isLoggedIn = true;
+    }
 }
 
 WindowManager::~WindowManager()
@@ -144,7 +152,16 @@ void WindowManager::render()
         }
         if (m_activeVoiceChannelId == 0) {
             ImGui::Indent();
-            ImGui::TextColored(ImVec4(0.345f, 0.396f, 0.949f, 1.0f), "- User (You)");
+            {
+                std::lock_guard<std::mutex> lock(m_peersMutex);
+                for (const auto& peer : m_voicePeers) {
+                    ImGui::TextColored(ImVec4(0.345f, 0.396f, 0.949f, 1.0f), "- %s", peer.c_str());
+                }
+                
+                if (m_voicePeers.empty() && m_isLoggedIn) {
+                    ImGui::TextColored(ImVec4(0.345f, 0.396f, 0.949f, 1.0f), "- %s (Connecting...)", m_username.c_str());
+                }
+            }
             ImGui::Unindent();
         }
     }
@@ -156,7 +173,7 @@ void WindowManager::render()
     ImGui::BeginChild("PanelB", ImVec2(sidebarWidth, userPanelHeight), false);
     
     ImGui::SetCursorPos(ImVec2(10, 12));
-    ImGui::Text("User");
+    ImGui::Text("%s", m_isLoggedIn ? m_username.c_str() : "Logging in...");
     ImGui::SetCursorPos(ImVec2(10, 30));
     ImGui::TextDisabled("Voice Connected");
 
@@ -211,8 +228,10 @@ void WindowManager::render()
     ImGui::PushItemWidth(chatAreaWidth - 30);
     if (ImGui::InputText("##ChatInput", m_chatInputBuffer, IM_ARRAYSIZE(m_chatInputBuffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
         if (m_chatInputBuffer[0] != '\0') {
-            m_chatHistory.push_back(std::string("User: ") + m_chatInputBuffer);
+            std::lock_guard<std::mutex> lock(m_chatMutex);
+            m_outgoingMessages.push(std::string(m_chatInputBuffer));
             std::memset(m_chatInputBuffer, 0, sizeof(m_chatInputBuffer));
+            ImGui::SetKeyboardFocusHere(-1);
         }
     }
     ImGui::PopItemWidth();
@@ -224,6 +243,8 @@ void WindowManager::render()
     if (m_showSettingsModal) {
         // Placeholder Settings Modal for phase 1.
     }
+
+    renderLoginModal();
 
     ImGui::Render();
     int display_w, display_h;
@@ -262,4 +283,66 @@ bool WindowManager::isDeafened() const
 bool WindowManager::shouldClose() const
 {
     return m_window != nullptr && glfwWindowShouldClose(m_window);
+}
+
+void WindowManager::renderLoginModal()
+{
+    if (m_isLoggedIn) return;
+    
+    ImGui::OpenPopup("Welcome to VoiceChat");
+    
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    
+    if (ImGui::BeginPopupModal("Welcome to VoiceChat", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove))
+    {
+        ImGui::Text("Please enter a username to join the network:");
+        ImGui::Separator();
+        
+        ImGui::InputText("Username", m_usernameInputBuffer, IM_ARRAYSIZE(m_usernameInputBuffer));
+        
+        if (ImGui::Button("Join", ImVec2(120, 0))) {
+            if (strlen(m_usernameInputBuffer) > 0) {
+                m_username = m_usernameInputBuffer;
+                m_isLoggedIn = true;
+                Utils::saveUsername(m_username);
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SetItemDefaultFocus();
+        ImGui::EndPopup();
+    }
+}
+
+bool WindowManager::isLoggedIn() const {
+    return m_isLoggedIn;
+}
+
+std::string WindowManager::getUsername() const {
+    return m_username;
+}
+
+void WindowManager::addIncomingMessage(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(m_chatMutex);
+    m_chatHistory.push_back(msg);
+}
+
+void WindowManager::setChatHistory(const std::vector<std::string>& msgs) {
+    std::lock_guard<std::mutex> lock(m_chatMutex);
+    m_chatHistory = msgs;
+}
+
+std::string WindowManager::getPendingOutgoingMessage() {
+    std::lock_guard<std::mutex> lock(m_chatMutex);
+    if (!m_outgoingMessages.empty()) {
+        std::string msg = m_outgoingMessages.front();
+        m_outgoingMessages.pop();
+        return msg;
+    }
+    return "";
+}
+
+void WindowManager::setVoicePeers(const std::vector<std::string>& peers) {
+    std::lock_guard<std::mutex> lock(m_peersMutex);
+    m_voicePeers = peers;
 }
