@@ -5,8 +5,17 @@
 #include <atomic>
 #include <mutex>
 #include <queue>
+#include <chrono>
+#include <map>
 
 struct GLFWwindow;
+
+struct VoicePeer {
+    std::string username;
+    bool isMuted;
+    bool isDeafened;
+    std::string uuid;
+};
 
 class WindowManager
 {
@@ -25,10 +34,17 @@ public:
     bool isLoggedIn() const;
     std::string getUsername() const;
     int getSelectedTextChannelId() const;
+    int getActiveVoiceChannelId() const;
+    
+    std::string getPendingNewTextChannel();
+    std::string getPendingNewVoiceChannel();
+    
+    void setChannels(const std::vector<std::pair<int, std::string>>& textChans, const std::vector<std::pair<int, std::string>>& voiceChans);
     void addIncomingMessage(const std::string& msg);
     void setChatHistory(const std::vector<std::string>& msgs);
     std::string getPendingOutgoingMessage();
     void setVoicePeers(const std::vector<std::string>& peers);
+    void markSpeakerActive(const std::string& uuid);
 
 private:
     void setupDarkTheme();
@@ -39,6 +55,14 @@ private:
     // UI state
     std::atomic<int> m_selectedTextChannelId;
     std::atomic<int> m_activeVoiceChannelId;
+    
+    std::mutex m_channelsMutex;
+    std::vector<std::pair<int, std::string>> m_textChannelsList;
+    std::vector<std::pair<int, std::string>> m_voiceChannelsList;
+    
+    std::queue<std::string> m_pendingNewTextChannels;
+    std::queue<std::string> m_pendingNewVoiceChannels;
+    
     std::atomic<bool> m_isMuted;
     std::atomic<bool> m_isDeafened;
     char m_chatInputBuffer[2048];
@@ -53,5 +77,6 @@ private:
     std::queue<std::string> m_outgoingMessages;
     
     std::mutex m_peersMutex;
-    std::vector<std::string> m_voicePeers;
+    std::vector<VoicePeer> m_voicePeers;
+    std::map<std::string, std::chrono::steady_clock::time_point> m_speakerActivity;
 };

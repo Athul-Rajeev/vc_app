@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <queue>
+#include <cmath>
 #include <RtAudio.h>
 #include <opus.h>
 
@@ -38,4 +39,6 @@ private:
     std::mutex m_dataMutex;
     std::queue<std::vector<uint8_t>> m_incomingPackets;
     std::queue<std::vector<uint8_t>> m_outgoingPackets;
+    
+    int m_vadHoldFrames;
 };

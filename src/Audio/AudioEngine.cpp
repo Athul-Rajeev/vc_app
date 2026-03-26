@@ -10,6 +10,7 @@ AudioEngine::AudioEngine()
     m_maxPacketSize = 4000;
     m_opusEncoder = nullptr;
     m_opusDecoder = nullptr;
+    m_vadHoldFrames = 0;
 }
 
 AudioEngine::~AudioEngine()
@@ -114,13 +115,30 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
 
     if (inputBuffer != nullptr)
     {
-        std::vector<uint8_t> encodedData(m_maxPacketSize);
-        int bytesEncoded = opus_encode(m_opusEncoder, inputBuffer, nFrames, encodedData.data(), m_maxPacketSize);
+        double sumSquares = 0.0;
+        int totalSamples = nFrames * m_channels;
+        for (int i = 0; i < totalSamples; ++i) {
+            double sample = inputBuffer[i] / 32768.0;
+            sumSquares += sample * sample;
+        }
+        double rms = std::sqrt(sumSquares / totalSamples);
 
-        if (bytesEncoded > 0)
-        {
-            encodedData.resize(bytesEncoded);
-            m_outgoingPackets.push(encodedData);
+        double threshold = 0.015; // roughly -36 dB
+        if (rms > threshold) {
+            m_vadHoldFrames = 25; // Hold for ~500ms (25 chunks of 20ms)
+        }
+
+        if (m_vadHoldFrames > 0) {
+            m_vadHoldFrames--;
+            
+            std::vector<uint8_t> encodedData(m_maxPacketSize);
+            int bytesEncoded = opus_encode(m_opusEncoder, inputBuffer, nFrames, encodedData.data(), m_maxPacketSize);
+
+            if (bytesEncoded > 0)
+            {
+                encodedData.resize(bytesEncoded);
+                m_outgoingPackets.push(encodedData);
+            }
         }
     }
 
