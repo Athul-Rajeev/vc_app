@@ -10,7 +10,8 @@
 
 struct GLFWwindow;
 
-struct VoicePeer {
+struct VoicePeer
+{
     std::string username;
     bool isMuted;
     bool isDeafened;
@@ -39,11 +40,11 @@ public:
     std::string getPendingNewTextChannel();
     std::string getPendingNewVoiceChannel();
     
-    void setChannels(const std::vector<std::pair<int, std::string>>& textChans, const std::vector<std::pair<int, std::string>>& voiceChans);
-    void addIncomingMessage(const std::string& msg);
-    void setChatHistory(const std::vector<std::string>& msgs);
+    void setChannels(const std::vector<std::pair<int, std::string>>& textChannels, const std::vector<std::pair<int, std::string>>& voiceChannels);
+    void addIncomingMessage(const std::string& message);
+    void setChatHistory(const std::vector<std::string>& messages);
     std::string getPendingOutgoingMessage();
-    void setVoicePeers(const std::vector<std::string>& peers);
+    void setVoicePeers(const std::vector<std::string>& peerDataList);
     void markSpeakerActive(const std::string& uuid);
 
 private:

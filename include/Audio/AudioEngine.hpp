@@ -1,5 +1,4 @@
 #pragma once
-#include <iostream>
 #include <cstring>
 #include <vector>
 #include <cstdint>
@@ -32,7 +31,7 @@ private:
     OpusDecoder* m_opusDecoder;
 
     int m_sampleRate;
-    int m_channels;
+    int m_audioChannelCount;
     int m_frameSize;
     int m_maxPacketSize;
 
