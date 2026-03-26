@@ -1,3 +1,5 @@
 build/
 .vscode/
 third_party/
+compile_commands.json
+.cache/

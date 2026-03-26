@@ -15,12 +15,28 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # ------------------------------------------------------------------------------
 set(RTAUDIO_BUILD_TESTING OFF CACHE BOOL "Disable RtAudio tests" FORCE)
 set(RTAUDIO_BUILD_SHARED_LIBS OFF CACHE BOOL "Build RtAudio statically" FORCE)
+set(RTAUDIO_API_PULSE ON CACHE BOOL "Enable PulseAudio" FORCE)
+set(RTAUDIO_API_ALSA OFF CACHE BOOL "Disable ALSA" FORCE)
 add_subdirectory(third_party/rtaudio)
 
 set(OPUS_BUILD_SHARED OFF CACHE BOOL "Build Opus statically" FORCE)
 set(OPUS_BUILD_TESTING OFF CACHE BOOL "Disable Opus tests" FORCE)
 set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "Disable Opus programs" FORCE)
 add_subdirectory(third_party/opus)
+
+include(FetchContent)
+FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG        3.4
+)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glfw)
+
+find_package(OpenGL REQUIRED)
 
 # ------------------------------------------------------------------------------
 # Core Application Setup
@@ -33,6 +49,13 @@ set(SOURCES
     src/Network/TailscaleNetwork.cpp
     src/Audio/AudioEngine.cpp
     src/UI/WindowManager.cpp
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_demo.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_glfw.cpp
+    third_party/imgui/backends/imgui_impl_opengl3.cpp
 )
 
 add_executable(VoiceChatApp ${SOURCES})
@@ -43,6 +66,7 @@ target_include_directories(VoiceChatApp PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/rtaudio
     ${CMAKE_SOURCE_DIR}/third_party/opus/include
     ${CMAKE_SOURCE_DIR}/third_party/imgui
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
 )
 
 # ------------------------------------------------------------------------------
@@ -65,6 +89,9 @@ if(UNIX AND NOT APPLE)
         pulse-simple
         rtaudio
         opus
+        glfw
+        OpenGL::GL
+        dl
     )
 
 elseif(WIN32)
@@ -81,6 +108,8 @@ elseif(WIN32)
         wsock32
         rtaudio
         opus
+        glfw
+        OpenGL::GL
     )
 endif()
 # ------------------------------------------------------------------------------
