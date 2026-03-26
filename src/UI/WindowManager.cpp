@@ -318,6 +318,10 @@ bool WindowManager::isLoggedIn() const {
     return m_isLoggedIn;
 }
 
+int WindowManager::getSelectedTextChannelId() const {
+    return m_selectedTextChannelId.load();
+}
+
 std::string WindowManager::getUsername() const {
     return m_username;
 }

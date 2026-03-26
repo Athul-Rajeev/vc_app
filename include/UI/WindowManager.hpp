@@ -24,6 +24,7 @@ public:
     
     bool isLoggedIn() const;
     std::string getUsername() const;
+    int getSelectedTextChannelId() const;
     void addIncomingMessage(const std::string& msg);
     void setChatHistory(const std::vector<std::string>& msgs);
     std::string getPendingOutgoingMessage();
@@ -36,8 +37,8 @@ private:
     GLFWwindow* m_window;
 
     // UI state
-    int m_selectedTextChannelId;
-    int m_activeVoiceChannelId;
+    std::atomic<int> m_selectedTextChannelId;
+    std::atomic<int> m_activeVoiceChannelId;
     std::atomic<bool> m_isMuted;
     std::atomic<bool> m_isDeafened;
     char m_chatInputBuffer[2048];

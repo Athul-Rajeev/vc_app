@@ -177,11 +177,18 @@ void Application::clientThreadLoop(const std::string& serverIp)
     std::string myUuid = Utils::getHardwareUUID();
     bool loggedInSent = false;
     long lastSyncTime = 0; 
+    int lastTextChannelId = -1;
     
     while (m_isRunning)
     {
         if (m_windowManager.isLoggedIn()) {
             std::string myUser = m_windowManager.getUsername();
+            int currentTextChannel = m_windowManager.getSelectedTextChannelId();
+            
+            if (currentTextChannel != lastTextChannelId) {
+                lastSyncTime = 1000;
+                lastTextChannelId = currentTextChannel;
+            }
             
             if (!loggedInSent) {
                 m_networkManager.sendSynchronousTcp(serverIp, "LOGIN|" + myUuid + "|" + myUser);
@@ -190,11 +197,12 @@ void Application::clientThreadLoop(const std::string& serverIp)
             
             std::string outgoingMsg = m_windowManager.getPendingOutgoingMessage();
             if (!outgoingMsg.empty()) {
-                m_networkManager.sendSynchronousTcp(serverIp, "CHAT|" + myUuid + "|0|" + outgoingMsg);
+                m_networkManager.sendSynchronousTcp(serverIp, "CHAT|" + myUuid + "|" + std::to_string(currentTextChannel) + "|" + outgoingMsg);
                 lastSyncTime = 1000; 
             }
             
             if (lastSyncTime > 500) {
+                // We hardcode 0 for Voice channel right now, but we send currentTextChannel in CHAT and POLL_CHAT
                 std::string statePayload = "STATE|" + myUuid + "|0|" + 
                     (m_windowManager.isMuted() ? "1" : "0") + "|" + 
                     (m_windowManager.isDeafened() ? "1" : "0");
@@ -208,7 +216,7 @@ void Application::clientThreadLoop(const std::string& serverIp)
                     m_windowManager.setVoicePeers(peers);
                 }
                 
-                std::string chatResp = m_networkManager.sendSynchronousTcp(serverIp, "POLL_CHAT|" + myUuid + "|0|");
+                std::string chatResp = m_networkManager.sendSynchronousTcp(serverIp, "POLL_CHAT|" + myUuid + "|" + std::to_string(currentTextChannel) + "|");
                 if (chatResp.find("CHAT_LOG|") == 0) {
                     std::vector<std::string> history;
                     std::istringstream iss(chatResp.substr(9));
