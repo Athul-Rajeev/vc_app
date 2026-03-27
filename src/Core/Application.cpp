@@ -1,9 +1,4 @@
 #include "Core/Application.hpp"
-#include "Core/Utils.hpp"
-#include "Network/TailscaleNetwork.hpp"
-#include <sstream>
-#include <map>
-#include <iostream>
 
 static constexpr size_t uuidLen = 36;
 
@@ -317,6 +312,13 @@ void Application::clientThreadLoop(const std::string& serverIp)
                 
                 std::string channelsResponse = m_networkManager.sendSynchronousTcp(serverIp, "SYNC_CHANNELS|");
                 processClientTcpPush(channelsResponse);
+                
+                // Force initial chat log fetch so the screen isn't blank
+                int initialTextChannelId = m_windowManager.getSelectedTextChannelId();
+                m_textChannelState.joinChannel(initialTextChannelId);
+                std::string logResponse = m_networkManager.sendSynchronousTcp(serverIp, "REQ_CHAT_LOG|" + localUuid + "|" + std::to_string(initialTextChannelId));
+                processClientTcpPush(logResponse);
+                
                 hasLoggedIn = true;
             }
             

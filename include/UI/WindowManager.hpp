@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iostream>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -8,6 +10,12 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_opengl3.h>
+#include <GLFW/glfw3.h>
+#include "Core/Utils.hpp"
+#include "UI/IconsFontAwesome6.h"
 
 struct GLFWwindow;
 

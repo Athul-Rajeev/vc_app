@@ -1,14 +1,20 @@
 #pragma once
+
+#include <iostream>
+#include <memory>
+#include <string>
+#include <thread>
+#include <atomic>
 #include "Network/INetworkProvider.hpp"
 #include "Network/NetworkManager.hpp"
 #include "Audio/AudioEngine.hpp"
 #include "UI/WindowManager.hpp"
 #include "Core/ChannelState.hpp"
 #include "Database/DatabaseManager.hpp"
-#include <memory>
-#include <string>
-#include <thread>
-#include <atomic>
+#include "Core/Utils.hpp"
+#include "Network/TailscaleNetwork.hpp"
+#include <sstream>
+#include <map>
 
 class Application
 {

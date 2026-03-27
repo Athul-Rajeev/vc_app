@@ -30,20 +30,21 @@ bool TailscaleNetwork::initialize(bool isServerMode)
         {
             asio::ip::udp::endpoint localEndpoint(asio::ip::udp::v4(), m_port);
             m_udpSocket.bind(localEndpoint);
-            
-            asio::ip::tcp::endpoint tcpEndpoint(asio::ip::tcp::v4(), 50001);
-            m_tcpAcceptor.open(tcpEndpoint.protocol());
-            m_tcpAcceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
-            m_tcpAcceptor.bind(tcpEndpoint);
-            m_tcpAcceptor.listen();
-            m_tcpAcceptor.non_blocking(true);
-            
             std::cout << "TailscaleServer initialized. Bound to UDP 50000, TCP 50001." << std::endl;
         } 
         else 
         {
-            std::cout << "TailscaleClient initialized." << std::endl;
+            std::cout << "TailscaleClient initialized. Bound to TCP 50001 for pushes." << std::endl;
         }
+
+        // Both client and server must listen for TCP connections in your current push architecture
+        asio::ip::tcp::endpoint tcpEndpoint(asio::ip::tcp::v4(), 50001);
+        m_tcpAcceptor.open(tcpEndpoint.protocol());
+        m_tcpAcceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
+        m_tcpAcceptor.bind(tcpEndpoint);
+        m_tcpAcceptor.listen();
+        m_tcpAcceptor.non_blocking(true);
+
         return true;
     }
     catch (const std::exception& errorException)
@@ -142,7 +143,7 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
 
 void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
 {
-    if (!m_isServerMode || !m_tcpAcceptor.is_open())
+    if (!m_tcpAcceptor.is_open())
     {
         return;
     }
@@ -180,7 +181,6 @@ void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::s
 
 void TailscaleNetwork::waitForEvents(int timeoutMs)
 {
-    // Queue an asynchronous wait operation without consuming the data.
     if (m_udpSocket.is_open())
     {
         m_udpSocket.async_wait(asio::socket_base::wait_read, [](const asio::error_code& ec)
@@ -188,7 +188,7 @@ void TailscaleNetwork::waitForEvents(int timeoutMs)
         });
     }
 
-    if (m_isServerMode && m_tcpAcceptor.is_open())
+    if (m_tcpAcceptor.is_open())
     {
         m_tcpAcceptor.async_wait(asio::socket_base::wait_read, [](const asio::error_code& ec)
         {
@@ -207,7 +207,7 @@ void TailscaleNetwork::waitForEvents(int timeoutMs)
         m_udpSocket.cancel(ec);
     }
     
-    if (m_isServerMode && m_tcpAcceptor.is_open())
+    if (m_tcpAcceptor.is_open())
     {
         m_tcpAcceptor.cancel(ec);
     }

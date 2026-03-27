@@ -1,12 +1,4 @@
 #include "UI/WindowManager.hpp"
-#include <iostream>
-#include <cstring>
-#include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_opengl3.h>
-#include <GLFW/glfw3.h>
-#include "Core/Utils.hpp"
-#include "UI/IconsFontAwesome6.h"
 
 WindowManager::WindowManager()
     : m_window(nullptr),
