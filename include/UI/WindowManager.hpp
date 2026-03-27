@@ -16,6 +16,7 @@ struct VoicePeer
     bool isMuted;
     bool isDeafened;
     std::string uuid;
+    int channelId;
 };
 
 class WindowManager

@@ -4,6 +4,7 @@
 #include <sstream>
 #include <map>
 #include <iostream>
+static constexpr size_t UUID_LEN = 36;
 
 Application::Application()
 {
@@ -217,27 +218,57 @@ void Application::serverThreadLoop()
         m_networkManager.pollTcpConnections(tcpHandler);
         
         NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
-        if (!incomingPacket.payload.empty() && !incomingPacket.senderIp.empty()) 
+        
+        // 1. Guard against empty packets
+        if (incomingPacket.payload.empty() || incomingPacket.senderIp.empty()) 
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
-        if (incomingPacket.payload.size() > 36) 
+
+        // 2. Guard against short packets
+        if (incomingPacket.payload.size() <= UUID_LEN) 
         {
-            std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), 36);
-            if (clientMap.count(packetSenderUuid)) 
+            std::cerr << "[Server] Dropped short packet (size " << incomingPacket.payload.size() << ") from " << incomingPacket.senderIp << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), UUID_LEN);
+
+        // 3. Guard against unknown clients
+        if (clientMap.find(packetSenderUuid) == clientMap.end()) 
+        {
+            std::cerr << "[Server] Received audio from unknown UUID: " << packetSenderUuid << " (Length: " << packetSenderUuid.length() << ")" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        auto& senderProfile = clientMap[packetSenderUuid];
+        senderProfile.latestUdpEndpoint = incomingPacket.senderIp;
+        int senderChannel = senderProfile.activeChannelId;
+        int forwardCount = 0;
+
+        for (const auto& [otherUuid, profile] : clientMap) 
+        {
+            bool isSelf = (otherUuid == packetSenderUuid);
+            bool sameChannel = (profile.activeChannelId == senderChannel);
+            bool hasEndpoint = !profile.latestUdpEndpoint.empty();
+
+            if (!isSelf && sameChannel && hasEndpoint) 
             {
-                clientMap[packetSenderUuid].latestUdpEndpoint = incomingPacket.senderIp;
-                int senderChannel = clientMap[packetSenderUuid].activeChannelId;
-                for (const auto& [otherUuid, profile] : clientMap) 
-                {
-                    if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && !profile.latestUdpEndpoint.empty()) 
-                    {
-                        m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, incomingPacket.payload);
-                    }
-                }
+                m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, incomingPacket.payload);
+                forwardCount++;
             }
         }
+        
+        static int recvKnownCounter = 0;
+        if (++recvKnownCounter % 50 == 0)
+        {
+            std::cout << "[Server] Audio packet received from " << senderProfile.username 
+                    << " | Forwarded to " << forwardCount << " peers." << std::endl;
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -358,16 +389,22 @@ void Application::clientThreadLoop(const std::string& serverIp)
                 std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
                 sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
                 m_networkManager.sendAudioPacket(serverIp, sfuPacket);
+                
+                static int sendCounter = 0;
+                if (++sendCounter % 50 == 0) std::cout << "[Client] Audio packet sent to server. UUID: " << localUuid << " (Size: " << sfuPacket.size() << ")" << std::endl;
             }
             
             NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
-            if (!incomingPacket.payload.empty() && incomingPacket.payload.size() > 36 && !m_windowManager.isDeafened()) 
+            if (!incomingPacket.payload.empty() && incomingPacket.payload.size() > UUID_LEN && !m_windowManager.isDeafened()) 
             {
-                std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), 36);
+                std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), UUID_LEN);
                 m_windowManager.markSpeakerActive(senderUuid);
                 
-                std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + 36, incomingPacket.payload.end());
+                std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + UUID_LEN, incomingPacket.payload.end());
                 m_audioEngine.pushIncomingPacket(opusAudioData);
+                
+                static int recvCounter = 0;
+                if (++recvCounter % 50 == 0) std::cout << "[Client] Audio packet received from UUID: " << senderUuid << " (Payload: " << opusAudioData.size() << " bytes)" << std::endl;
             }
         }
         

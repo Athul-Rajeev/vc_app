@@ -141,6 +141,9 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
             {
                 encodedData.resize(bytesEncoded);
                 m_outgoingPackets.push(encodedData);
+                
+                static int encodeCounter = 0;
+                if (++encodeCounter % 100 == 0) std::cout << "[Audio] Voice activity detected. Encoded " << bytesEncoded << " bytes." << std::endl;
             }
         }
     }
