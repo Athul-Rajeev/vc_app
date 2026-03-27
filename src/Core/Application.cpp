@@ -218,46 +218,57 @@ void Application::serverThreadLoop()
         m_networkManager.pollTcpConnections(tcpHandler);
         
         NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+        
+        // 1. Guard against empty packets
         if (incomingPacket.payload.empty() || incomingPacket.senderIp.empty()) 
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        if (incomingPacket.payload.size() > UUID_LEN) 
-        {
-            std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), UUID_LEN);
-            
-            if (clientMap.count(packetSenderUuid)) 
-            {
-                clientMap[packetSenderUuid].latestUdpEndpoint = incomingPacket.senderIp;
-                int senderChannel = clientMap[packetSenderUuid].activeChannelId;
-                
-                int forwardCount = 0;
-                for (const auto& [otherUuid, profile] : clientMap) 
-                {
-                    if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && !profile.latestUdpEndpoint.empty()) 
-                    {
-                        m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, incomingPacket.payload);
-                        forwardCount++;
-                    }
-                }
-                
-                static int recvKnownCounter = 0;
-                if (++recvKnownCounter % 50 == 0)
-                {
-                    std::cout << "[Server] Audio packet received from " << clientMap[packetSenderUuid].username << " | Forwarded to " << forwardCount << " peers." << std::endl;
-                }
-            }
-            else
-            {
-                std::cerr << "[Server] Received audio from unknown UUID: " << packetSenderUuid << " (Length: " << packetSenderUuid.length() << ")" << std::endl;
-            }
-        }
-        else
+        // 2. Guard against short packets
+        if (incomingPacket.payload.size() <= UUID_LEN) 
         {
             std::cerr << "[Server] Dropped short packet (size " << incomingPacket.payload.size() << ") from " << incomingPacket.senderIp << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
         }
+
+        std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), UUID_LEN);
+
+        // 3. Guard against unknown clients
+        if (clientMap.find(packetSenderUuid) == clientMap.end()) 
+        {
+            std::cerr << "[Server] Received audio from unknown UUID: " << packetSenderUuid << " (Length: " << packetSenderUuid.length() << ")" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        auto& senderProfile = clientMap[packetSenderUuid];
+        senderProfile.latestUdpEndpoint = incomingPacket.senderIp;
+        int senderChannel = senderProfile.activeChannelId;
+        int forwardCount = 0;
+
+        for (const auto& [otherUuid, profile] : clientMap) 
+        {
+            bool isSelf = (otherUuid == packetSenderUuid);
+            bool sameChannel = (profile.activeChannelId == senderChannel);
+            bool hasEndpoint = !profile.latestUdpEndpoint.empty();
+
+            if (!isSelf && sameChannel && hasEndpoint) 
+            {
+                m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, incomingPacket.payload);
+                forwardCount++;
+            }
+        }
+        
+        static int recvKnownCounter = 0;
+        if (++recvKnownCounter % 50 == 0)
+        {
+            std::cout << "[Server] Audio packet received from " << senderProfile.username 
+                    << " | Forwarded to " << forwardCount << " peers." << std::endl;
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }

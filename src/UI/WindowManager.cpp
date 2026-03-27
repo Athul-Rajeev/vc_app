@@ -232,32 +232,27 @@ void WindowManager::render()
                 m_activeVoiceChannelId = channel.first;
             }
             
-            if (m_activeVoiceChannelId == channel.first) 
+            ImGui::Indent();
             {
-                ImGui::Indent();
+                std::lock_guard<std::mutex> lock(m_peersMutex);
+                auto currentTime = std::chrono::steady_clock::now();
+                for (const auto& peer : m_voicePeers) 
                 {
-                    std::lock_guard<std::mutex> lock(m_peersMutex);
-                    auto currentTime = std::chrono::steady_clock::now();
-                    for (const auto& peer : m_voicePeers) 
-                    {
-                        bool isSpeaking = m_speakerActivity.count(peer.uuid) && 
-                                          std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_speakerActivity[peer.uuid]).count() < 300;
-                        
-                        ImVec4 peerColor = isSpeaking ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-                        
-                        std::string statusBadges = "";
-                        if (peer.isMuted) statusBadges += std::string(" ") + ICON_FA_MICROPHONE_SLASH;
-                        if (peer.isDeafened) statusBadges += std::string(" ") + ICON_FA_HEADPHONES;
-                        
-                        ImGui::TextColored(peerColor, "  %s%s", peer.username.c_str(), statusBadges.c_str());
-                    }
+                    if (peer.channelId != channel.first) continue;
+
+                    bool isSpeaking = m_speakerActivity.count(peer.uuid) && std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_speakerActivity[peer.uuid]).count() < 300;
                     
-                    if (m_voicePeers.empty() && m_isLoggedIn) 
-                    {
-                        ImGui::TextColored(ImVec4(0.345f, 0.396f, 0.949f, 1.0f), "  %s (Connecting...)", m_username.c_str());
-                    }
+                    ImVec4 peerColor = isSpeaking ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+                    
+                    std::string statusBadges = "";
+                    if (peer.isMuted) statusBadges += std::string(" ") + ICON_FA_MICROPHONE_SLASH;
+                    if (peer.isDeafened) statusBadges += std::string(" ") + ICON_FA_HEADPHONES;
+                    
+                    ImGui::TextColored(peerColor, "  %s%s", peer.username.c_str(), statusBadges.c_str());
                 }
-                
+            }
+            if (m_activeVoiceChannelId == channel.first)
+            {
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 0.6f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
                 if (ImGui::Button("Leave VC", ImVec2(ImGui::GetContentRegionAvail().x, 24)))
@@ -265,9 +260,9 @@ void WindowManager::render()
                     m_activeVoiceChannelId = -1;
                 }
                 ImGui::PopStyleColor(2);
-                
-                ImGui::Unindent();
             }
+            
+            ImGui::Unindent();
         }
     }
     ImGui::PopStyleVar();
@@ -303,10 +298,7 @@ void WindowManager::render()
     if (ImGui::Button(currentlyDeafened ? "Undeaf" : "Deaf", ImVec2(45, 30))) 
     {
         m_isDeafened.store(!currentlyDeafened);
-        if (!currentlyDeafened) 
-        {
-            m_isMuted.store(true);
-        }
+        m_isMuted.store(!currentlyDeafened);
     }
 
     ImGui::EndChild();
@@ -533,12 +525,14 @@ void WindowManager::setVoicePeers(const std::vector<std::string>& peerDataList)
         if (secondColon == std::string::npos) continue;
         size_t thirdColon = peerEntry.find(':', secondColon + 1);
         if (thirdColon == std::string::npos) continue;
+        size_t fourthColon = peerEntry.find(':', thirdColon + 1);
         
         VoicePeer peer;
         peer.username = peerEntry.substr(0, firstColon);
         peer.isMuted = (peerEntry.substr(firstColon + 1, secondColon - firstColon - 1) == "1");
         peer.isDeafened = (peerEntry.substr(secondColon + 1, thirdColon - secondColon - 1) == "1");
         peer.uuid = peerEntry.substr(thirdColon + 1);
+        peer.channelId = std::stoi(peerEntry.substr(fourthColon + 1));
         m_voicePeers.push_back(peer);
     }
 }
