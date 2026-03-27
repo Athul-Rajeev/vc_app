@@ -517,7 +517,7 @@ std::string WindowManager::getUsername() const
     return m_username;
 }
 
-void WindowManager::addIncomingMessage(const std::string& message) 
+void WindowManager::appendChatMessage(const std::string& message) 
 {
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     m_backBuffer->chatHistory.push_back(message);

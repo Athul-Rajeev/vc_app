@@ -52,7 +52,7 @@ public:
     std::string getPendingNewVoiceChannel();
     
     void setChannels(const std::vector<std::pair<int, std::string>>& textChannels, const std::vector<std::pair<int, std::string>>& voiceChannels);
-    void addIncomingMessage(const std::string& message);
+    void appendChatMessage(const std::string& message);
     void setChatHistory(const std::vector<std::string>& messages);
     std::string getPendingOutgoingMessage();
     void setVoicePeers(const std::vector<std::string>& peerDataList);

@@ -10,6 +10,8 @@ public:
 
     void joinChannel(int channelId);
     void leaveCurrentChannel();
+    
+    int getCurrentChannelId() const;
     std::vector<std::string> getActivePeers() const;
 
 private:
