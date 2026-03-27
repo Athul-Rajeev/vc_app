@@ -10,9 +10,13 @@ TailscaleNetwork::TailscaleNetwork()
 TailscaleNetwork::~TailscaleNetwork()
 {
     if (m_udpSocket.is_open())
+    {
         m_udpSocket.close();
+    }
     if (m_tcpAcceptor.is_open())
+    {
         m_tcpAcceptor.close();
+    }
 }
 
 bool TailscaleNetwork::initialize(bool isServerMode)
@@ -70,7 +74,6 @@ void TailscaleNetwork::sendData(const std::string& targetIp, const std::vector<u
     }
     catch (const std::exception& errorException)
     {
-        // Suppress print to avoid UI stutter on missing peers
     }
 }
 
@@ -109,7 +112,10 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
         
         std::string ip = targetIp;
         size_t colonPos = targetIp.find(':');
-        if (colonPos != std::string::npos) ip = targetIp.substr(0, colonPos);
+        if (colonPos != std::string::npos)
+        {
+            ip = targetIp.substr(0, colonPos);
+        }
 
         asio::ip::tcp::resolver::results_type endpoints = resolver.resolve(ip, "50001");
         asio::connect(socket, endpoints);
@@ -129,7 +135,6 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
     } 
     catch (...) 
     {
-        
     }
     
     return "";
@@ -137,7 +142,10 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
 
 void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
 {
-    if (!m_isServerMode || !m_tcpAcceptor.is_open()) return;
+    if (!m_isServerMode || !m_tcpAcceptor.is_open())
+    {
+        return;
+    }
     
     try 
     {
@@ -167,6 +175,40 @@ void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::s
     } 
     catch (...) 
     {
+    }
+}
 
+void TailscaleNetwork::waitForEvents(int timeoutMs)
+{
+    // Queue an asynchronous wait operation without consuming the data.
+    if (m_udpSocket.is_open())
+    {
+        m_udpSocket.async_wait(asio::socket_base::wait_read, [](const asio::error_code& ec)
+        {
+        });
+    }
+
+    if (m_isServerMode && m_tcpAcceptor.is_open())
+    {
+        m_tcpAcceptor.async_wait(asio::socket_base::wait_read, [](const asio::error_code& ec)
+        {
+        });
+    }
+
+    // Run the IO context. It will yield to the OS and block until either
+    // a socket becomes readable, or the timeout expires.
+    m_ioContext.restart();
+    m_ioContext.run_for(std::chrono::milliseconds(timeoutMs));
+
+    // Cancel pending waits so they do not conflict with the next manual poll.
+    asio::error_code ec;
+    if (m_udpSocket.is_open())
+    {
+        m_udpSocket.cancel(ec);
+    }
+    
+    if (m_isServerMode && m_tcpAcceptor.is_open())
+    {
+        m_tcpAcceptor.cancel(ec);
     }
 }

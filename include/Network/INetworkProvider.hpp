@@ -2,7 +2,6 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-
 #include <functional>
 
 struct NetworkPacket
@@ -22,4 +21,6 @@ public:
 
     virtual std::string sendSynchronousTcp(const std::string& targetIp, const std::string& payload) = 0;
     virtual void pollTcpConnections(std::function<std::string(const std::string& incomingIp, const std::string& payload)> requestHandler) = 0;
+    
+    virtual void waitForEvents(int timeoutMs) = 0;
 };

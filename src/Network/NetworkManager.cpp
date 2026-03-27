@@ -48,3 +48,11 @@ void NetworkManager::pollTcpConnections(std::function<std::string(const std::str
         m_activeProvider->pollTcpConnections(requestHandler);
     }
 }
+
+void NetworkManager::waitForEvents(int timeoutMs)
+{
+    if (m_activeProvider != nullptr)
+    {
+        m_activeProvider->waitForEvents(timeoutMs);
+    }
+}

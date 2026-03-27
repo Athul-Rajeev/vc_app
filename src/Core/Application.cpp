@@ -149,7 +149,7 @@ void Application::serverThreadLoop()
             profile.isMuted = false;
             profile.isDeafened = false;
             profile.latestUdpEndpoint = incomingIp + ":50000";
-            profile.tcpEndpoint = incomingIp; // Assuming NetworkManager can route this back
+            profile.tcpEndpoint = incomingIp;
             
             clientMap[senderUuid] = profile;
             std::cout << "User logged in: " << username << std::endl;
@@ -251,13 +251,15 @@ void Application::serverThreadLoop()
 
     while (m_isRunning)
     {
+        // Event-driven block: Sleeps thread via OS interrupts, 
+        // waking instantly on packet arrival or maxing at 10ms.
+        m_networkManager.waitForEvents(10);
+
         m_networkManager.pollTcpConnections(tcpHandler);
-        
         NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
         
         if (incomingPacket.payload.empty() || incomingPacket.senderIp.empty() || incomingPacket.payload.size() <= uuidLen)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
@@ -300,7 +302,10 @@ void Application::clientThreadLoop(const std::string& serverIp)
 
     while (m_isRunning)
     {
-        // 1. Listen for pushed updates from the server
+        //1. Block to save client CPU, freeing up cycles for the UI/Audio threads.
+        // It provides quick UI responsiveness (5ms poll rate) without spin-locking.
+        m_networkManager.waitForEvents(5);
+
         m_networkManager.pollTcpConnections(clientTcpHandler);
 
         if (m_windowManager.isLoggedIn())
@@ -345,7 +350,7 @@ void Application::clientThreadLoop(const std::string& serverIp)
                 m_networkManager.sendSynchronousTcp(serverIp, "CHAT|" + localUuid + "|" + std::to_string(uiTextChannelId) + "|" + outgoingMessage);
             }
             
-            // 4. Audio Processing (Remains unchanged)
+            // 4. Audio Processing
             std::vector<uint8_t> outgoingAudio = m_audioEngine.getOutgoingPacket();
             if (!outgoingAudio.empty() && !uiMuted && !uiDeafened)
             {
@@ -364,7 +369,6 @@ void Application::clientThreadLoop(const std::string& serverIp)
                 m_audioEngine.pushIncomingPacket(opusAudioData);
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
@@ -421,7 +425,10 @@ void Application::processClientTcpPush(const std::string& payload)
                     std::string token;
                     while (std::getline(tokenStream, token, ','))
                     {
-                        if (token.empty()) continue;
+                        if (token.empty())
+                        {
+                            continue;
+                        }
                         size_t equalsPosition = token.find('=');
                         if (equalsPosition != std::string::npos)
                         {
