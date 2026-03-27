@@ -1,6 +1,12 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
+#include <atomic>
+#include <functional>
 
 struct sqlite3;
 
@@ -36,5 +42,13 @@ public:
     int addVoiceChannel(const std::string& name);
 
 private:
+    void workerThreadLoop();
+
     sqlite3* m_db;
+    
+    std::thread m_workerThread;
+    std::mutex m_queueMutex;
+    std::condition_variable m_queueCondition;
+    std::queue<std::function<void()>> m_taskQueue;
+    std::atomic<bool> m_isWorkerRunning;
 };

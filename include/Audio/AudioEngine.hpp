@@ -3,11 +3,11 @@
 #include <vector>
 #include <cstdint>
 #include <mutex>
-#include <queue>
-#include <cmath>
+#include <map>
+#include <chrono>
 #include <RtAudio.h>
 #include <opus.h>
-
+#include <cmath>
 class AudioEngine
 {
 public:
@@ -36,8 +36,12 @@ private:
     int m_maxPacketSize;
 
     std::mutex m_dataMutex;
-    std::queue<std::vector<uint8_t>> m_incomingPackets;
-    std::queue<std::vector<uint8_t>> m_outgoingPackets;
     
+    std::map<uint32_t, std::vector<uint8_t>> m_jitterBuffer;
+    std::vector<std::vector<uint8_t>> m_outgoingPackets;
+    
+    uint32_t m_sequenceCounter;
+    uint32_t m_lastPlayedSequence;
+    bool m_isBuffering;
     int m_vadHoldFrames;
 };

@@ -11,6 +11,9 @@ AudioEngine::AudioEngine()
     m_opusEncoder = nullptr;
     m_opusDecoder = nullptr;
     m_vadHoldFrames = 0;
+    m_sequenceCounter = 1;
+    m_lastPlayedSequence = 0;
+    m_isBuffering = true;
 }
 
 AudioEngine::~AudioEngine()
@@ -64,7 +67,6 @@ bool AudioEngine::initialize()
 
     unsigned int bufferFrames = m_frameSize;
 
-    // RtAudio v6+ returns 0 on success instead of throwing exceptions
     unsigned int streamStatus = m_audioSystem.openStream(&outputParams, &inputParams, RTAUDIO_SINT16, m_sampleRate, &bufferFrames, &routingCallback, this);
     
     if (streamStatus != 0)
@@ -124,40 +126,54 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
         }
         double rootMeanSquare = std::sqrt(sumOfSquares / totalSamples);
 
-        double voiceActivationThreshold = 0.015; // roughly -36 dB
+        double voiceActivationThreshold = 0.015;
         if (rootMeanSquare > voiceActivationThreshold)
         {
-            m_vadHoldFrames = 25; // Hold for ~500ms (25 chunks of 20ms)
+            m_vadHoldFrames = 25; 
         }
 
         if (m_vadHoldFrames > 0)
         {
             m_vadHoldFrames--;
             
-            std::vector<uint8_t> encodedData(m_maxPacketSize);
-            int bytesEncoded = opus_encode(m_opusEncoder, inputBuffer, nFrames, encodedData.data(), m_maxPacketSize);
+            std::vector<uint8_t> encodedData(m_maxPacketSize + 12);
+            
+            uint32_t currentSequence = m_sequenceCounter++;
+            uint64_t currentTimestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            
+            std::memcpy(encodedData.data(), &currentSequence, sizeof(uint32_t));
+            std::memcpy(encodedData.data() + sizeof(uint32_t), &currentTimestamp, sizeof(uint64_t));
+
+            int bytesEncoded = opus_encode(m_opusEncoder, inputBuffer, nFrames, encodedData.data() + 12, m_maxPacketSize);
 
             if (bytesEncoded > 0)
             {
-                encodedData.resize(bytesEncoded);
-                m_outgoingPackets.push(encodedData);
-                
-                static int encodeCounter = 0;
-                if (++encodeCounter % 100 == 0) std::cout << "[Audio] Voice activity detected. Encoded " << bytesEncoded << " bytes." << std::endl;
+                encodedData.resize(12 + bytesEncoded);
+                m_outgoingPackets.push_back(encodedData);
             }
         }
     }
 
     if (outputBuffer != nullptr)
     {
-        if (!m_incomingPackets.empty())
+        if (m_isBuffering && m_jitterBuffer.size() >= 3)
         {
-            std::vector<uint8_t> packetData = m_incomingPackets.front();
-            m_incomingPackets.pop();
+            m_isBuffering = false;
+        }
+        else if (!m_isBuffering && m_jitterBuffer.empty())
+        {
+            m_isBuffering = true;
+        }
+
+        if (!m_isBuffering && !m_jitterBuffer.empty())
+        {
+            auto bufferIterator = m_jitterBuffer.begin();
+            m_lastPlayedSequence = bufferIterator->first;
+            std::vector<uint8_t> packetData = bufferIterator->second;
+            m_jitterBuffer.erase(bufferIterator);
 
             int decodeResult = opus_decode(m_opusDecoder, packetData.data(), packetData.size(), outputBuffer, nFrames, 0);
             
-            // If the packet was corrupted and decoding failed, play silence
             if (decodeResult < 0)
             {
                 std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
@@ -165,7 +181,11 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
         }
         else
         {
-            std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
+            int decodeResult = opus_decode(m_opusDecoder, nullptr, 0, outputBuffer, nFrames, 0);
+            if (decodeResult < 0)
+            {
+                std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
+            }
         }
     }
 
@@ -180,7 +200,7 @@ std::vector<uint8_t> AudioEngine::getOutgoingPacket()
     if (!m_outgoingPackets.empty())
     {
         packetData = m_outgoingPackets.front();
-        m_outgoingPackets.pop();
+        m_outgoingPackets.erase(m_outgoingPackets.begin());
     }
 
     return packetData;
@@ -189,5 +209,20 @@ std::vector<uint8_t> AudioEngine::getOutgoingPacket()
 void AudioEngine::pushIncomingPacket(const std::vector<uint8_t>& opusPacket)
 {
     std::lock_guard<std::mutex> lockGuard(m_dataMutex);
-    m_incomingPackets.push(opusPacket);
+    
+    if (opusPacket.size() <= 12)
+    {
+        return;
+    }
+
+    uint32_t sequenceNumber;
+    std::memcpy(&sequenceNumber, opusPacket.data(), sizeof(uint32_t));
+    
+    if (m_lastPlayedSequence != 0 && sequenceNumber <= m_lastPlayedSequence)
+    {
+        return;
+    }
+
+    std::vector<uint8_t> payloadData(opusPacket.begin() + 12, opusPacket.end());
+    m_jitterBuffer[sequenceNumber] = payloadData;
 }

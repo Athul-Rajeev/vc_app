@@ -2,10 +2,22 @@
 #include <iostream>
 #include <sqlite3.h>
 
-DatabaseManager::DatabaseManager() : m_db(nullptr) {}
+DatabaseManager::DatabaseManager() : m_db(nullptr), m_isWorkerRunning(false)
+{
+}
 
 DatabaseManager::~DatabaseManager() 
 {
+    if (m_isWorkerRunning)
+    {
+        m_isWorkerRunning = false;
+        m_queueCondition.notify_all();
+        if (m_workerThread.joinable())
+        {
+            m_workerThread.join();
+        }
+    }
+
     if (m_db) 
     {
         sqlite3_close(m_db);
@@ -61,7 +73,6 @@ bool DatabaseManager::initialize(const std::string& dbPath)
         return false;
     }
     
-    // Seed defaults if empty
     auto existingTextChannels = fetchTextChannels();
     if (existingTextChannels.empty()) 
     {
@@ -75,39 +86,83 @@ bool DatabaseManager::initialize(const std::string& dbPath)
         addVoiceChannel("Voice General");
     }
     
+    m_isWorkerRunning = true;
+    m_workerThread = std::thread(&DatabaseManager::workerThreadLoop, this);
+    
     return true;
+}
+
+void DatabaseManager::workerThreadLoop()
+{
+    while (m_isWorkerRunning)
+    {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            m_queueCondition.wait(lock, [this]
+            {
+                return !m_taskQueue.empty() || !m_isWorkerRunning;
+            });
+
+            if (!m_isWorkerRunning && m_taskQueue.empty())
+            {
+                return;
+            }
+
+            task = std::move(m_taskQueue.front());
+            m_taskQueue.pop();
+        }
+
+        if (task)
+        {
+            task();
+        }
+    }
 }
 
 void DatabaseManager::storeMessage(int channelId, const std::string& uuid, const std::string& username, const std::string& message) 
 {
-    if (!m_db) return;
-
-    sqlite3_stmt* stmt;
-    const char* sqlInsert = "INSERT INTO messages (channel_id, uuid, username, message) VALUES (?, ?, ?, ?)";
-    
-    if (sqlite3_prepare_v2(m_db, sqlInsert, -1, &stmt, 0) == SQLITE_OK) 
     {
-        sqlite3_bind_int(stmt, 1, channelId);
-        sqlite3_bind_text(stmt, 2, uuid.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 3, username.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 4, message.c_str(), -1, SQLITE_TRANSIENT);
-        
-        if (sqlite3_step(stmt) != SQLITE_DONE) 
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_taskQueue.push([this, channelId, uuid, username, message]()
         {
-            std::cerr << "Execution failed: " << sqlite3_errmsg(m_db) << std::endl;
-        }
-        sqlite3_finalize(stmt);
-    } 
-    else 
-    {
-        std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(m_db) << std::endl;
+            if (!m_db)
+            {
+                return;
+            }
+
+            sqlite3_stmt* stmt;
+            const char* sqlInsert = "INSERT INTO messages (channel_id, uuid, username, message) VALUES (?, ?, ?, ?)";
+            
+            if (sqlite3_prepare_v2(m_db, sqlInsert, -1, &stmt, 0) == SQLITE_OK) 
+            {
+                sqlite3_bind_int(stmt, 1, channelId);
+                sqlite3_bind_text(stmt, 2, uuid.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 3, username.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 4, message.c_str(), -1, SQLITE_TRANSIENT);
+                
+                if (sqlite3_step(stmt) != SQLITE_DONE) 
+                {
+                    std::cerr << "Execution failed: " << sqlite3_errmsg(m_db) << std::endl;
+                }
+                sqlite3_finalize(stmt);
+            } 
+            else 
+            {
+                std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(m_db) << std::endl;
+            }
+        });
     }
+    m_queueCondition.notify_one();
 }
 
 std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int limit) 
 {
     std::vector<ChatMessage> history;
-    if (!m_db) return history;
+    if (!m_db)
+    {
+        return history;
+    }
 
     sqlite3_stmt* stmt;
     const char* sqlSelect = "SELECT id, channel_id, uuid, username, message, timestamp "
@@ -152,7 +207,10 @@ std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int l
 std::vector<Channel> DatabaseManager::fetchTextChannels() 
 {
     std::vector<Channel> channels;
-    if (!m_db) return channels;
+    if (!m_db)
+    {
+        return channels;
+    }
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(m_db, "SELECT id, name FROM text_channels ORDER BY id ASC", -1, &stmt, 0) == SQLITE_OK) 
     {
@@ -172,7 +230,10 @@ std::vector<Channel> DatabaseManager::fetchTextChannels()
 std::vector<Channel> DatabaseManager::fetchVoiceChannels() 
 {
     std::vector<Channel> channels;
-    if (!m_db) return channels;
+    if (!m_db)
+    {
+        return channels;
+    }
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(m_db, "SELECT id, name FROM voice_channels ORDER BY id ASC", -1, &stmt, 0) == SQLITE_OK) 
     {
@@ -191,7 +252,10 @@ std::vector<Channel> DatabaseManager::fetchVoiceChannels()
 
 int DatabaseManager::addTextChannel(const std::string& name) 
 {
-    if (!m_db) return -1;
+    if (!m_db)
+    {
+        return -1;
+    }
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(m_db, "INSERT INTO text_channels (name) VALUES (?)", -1, &stmt, 0) == SQLITE_OK) 
     {
@@ -205,7 +269,10 @@ int DatabaseManager::addTextChannel(const std::string& name)
 
 int DatabaseManager::addVoiceChannel(const std::string& name) 
 {
-    if (!m_db) return -1;
+    if (!m_db)
+    {
+        return -1;
+    }
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(m_db, "INSERT INTO voice_channels (name) VALUES (?)", -1, &stmt, 0) == SQLITE_OK) 
     {
