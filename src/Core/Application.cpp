@@ -70,7 +70,6 @@ void Application::runMainLoop(const std::string& targetIp)
     }
     else
     {
-        m_audioEngine.startStream();
         std::cout << "Starting Client Engine targeting: " << targetIp << std::endl;
         m_networkThread = std::thread(&Application::clientThreadLoop, this, targetIp);
 

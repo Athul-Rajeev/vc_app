@@ -55,31 +55,34 @@ bool AudioEngine::initialize()
         return false;
     }
 
-    RtAudio::StreamParameters outputParams;
-    outputParams.deviceId = m_audioSystem.getDefaultOutputDevice();
-    outputParams.nChannels = m_audioChannelCount;
-    outputParams.firstChannel = 0;
-
-    RtAudio::StreamParameters inputParams;
-    inputParams.deviceId = m_audioSystem.getDefaultInputDevice();
-    inputParams.nChannels = m_audioChannelCount;
-    inputParams.firstChannel = 0;
-
-    unsigned int bufferFrames = m_frameSize;
-
-    unsigned int streamStatus = m_audioSystem.openStream(&outputParams, &inputParams, RTAUDIO_SINT16, m_sampleRate, &bufferFrames, &routingCallback, this);
-    
-    if (streamStatus != 0)
-    {
-        std::cerr << "Failed to open audio stream: " << m_audioSystem.getErrorText() << std::endl;
-        return false;
-    }
-
     return true;
 }
 
 void AudioEngine::startStream()
 {
+    if (!m_audioSystem.isStreamOpen())
+    {
+        RtAudio::StreamParameters outputParams;
+        outputParams.deviceId = m_audioSystem.getDefaultOutputDevice();
+        outputParams.nChannels = m_audioChannelCount;
+        outputParams.firstChannel = 0;
+
+        RtAudio::StreamParameters inputParams;
+        inputParams.deviceId = m_audioSystem.getDefaultInputDevice();
+        inputParams.nChannels = m_audioChannelCount;
+        inputParams.firstChannel = 0;
+
+        unsigned int bufferFrames = m_frameSize;
+
+        unsigned int streamStatus = m_audioSystem.openStream(&outputParams, &inputParams, RTAUDIO_SINT16, m_sampleRate, &bufferFrames, &routingCallback, this);
+        
+        if (streamStatus != 0)
+        {
+            std::cerr << "Failed to open audio stream: " << m_audioSystem.getErrorText() << std::endl;
+            return;
+        }
+    }
+
     if (m_audioSystem.isStreamOpen() && !m_audioSystem.isStreamRunning())
     {
         if (m_audioSystem.startStream() != 0)
