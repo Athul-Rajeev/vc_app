@@ -226,3 +226,14 @@ void AudioEngine::pushIncomingPacket(const std::vector<uint8_t>& opusPacket)
     std::vector<uint8_t> payloadData(opusPacket.begin() + 12, opusPacket.end());
     m_jitterBuffer[sequenceNumber] = payloadData;
 }
+
+void AudioEngine::resetBuffers()
+{
+    std::lock_guard<std::mutex> lockGuard(m_dataMutex);
+    m_outgoingPackets.clear();
+    m_jitterBuffer.clear();
+    m_lastPlayedSequence = 0;
+    m_sequenceCounter = 1;
+    m_vadHoldFrames = 0;
+    m_isBuffering = true;
+}

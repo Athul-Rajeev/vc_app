@@ -412,18 +412,26 @@ void Application::clientThreadLoop(const std::string& serverIp)
             bool uiMuted = m_windowManager.isMuted();
             bool uiDeafened = m_windowManager.isDeafened();
 
-            // Trigger a state update if the channel, mute state, or deafened state changes
-            if (uiVoiceChannelId != m_voiceChannelState.getCurrentChannelId() || 
-                uiMuted != lastMutedState || 
-                uiDeafened != lastDeafenedState)
+            if (uiVoiceChannelId != m_voiceChannelState.getCurrentChannelId() || uiMuted != lastMutedState || uiDeafened != lastDeafenedState)
             {
+                int previousChannelId = m_voiceChannelState.getCurrentChannelId();
                 m_voiceChannelState.joinChannel(uiVoiceChannelId);
+                
+                if (previousChannelId == -1 && uiVoiceChannelId != -1)
+                {
+                    m_audioEngine.resetBuffers();
+                    m_audioEngine.startStream();
+                }
+                else if (previousChannelId != -1 && uiVoiceChannelId == -1)
+                {
+                    m_audioEngine.stopStream();
+                    m_audioEngine.resetBuffers();
+                }
+
                 lastMutedState = uiMuted;
                 lastDeafenedState = uiDeafened;
 
-                std::string statePayload = "STATE|" + localUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + 
-                    (uiMuted ? "1" : "0") + "|" + 
-                    (uiDeafened ? "1" : "0");
+                std::string statePayload = "STATE|" + localUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + (uiMuted ? "1" : "0") + "|" + (uiDeafened ? "1" : "0");
                     
                 m_networkManager.sendSynchronousTcp(serverIp, statePayload);
             }
@@ -448,7 +456,6 @@ void Application::clientThreadLoop(const std::string& serverIp)
             }
             
             // 4. Audio Processing
-
             // Always drain the buffers to prevent memory leaks and socket blocking
             std::vector<uint8_t> outgoingAudio = m_audioEngine.getOutgoingPacket();
             NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();

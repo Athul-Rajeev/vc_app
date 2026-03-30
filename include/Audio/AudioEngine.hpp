@@ -20,6 +20,7 @@ public:
 
     std::vector<uint8_t> getOutgoingPacket();
     void pushIncomingPacket(const std::vector<uint8_t>& opusPacket);
+    void resetBuffers();
 
 private:
     static int routingCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames, double streamTime, RtAudioStreamStatus status, void* userData);
