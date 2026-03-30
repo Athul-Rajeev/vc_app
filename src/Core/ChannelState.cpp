@@ -23,6 +23,11 @@ void ChannelState::leaveCurrentChannel()
     m_activePeers.clear();
 }
 
+int ChannelState::getCurrentChannelId() const
+{
+    return m_currentChannelId;
+}
+
 std::vector<std::string> ChannelState::getActivePeers() const
 {
     return m_activePeers;

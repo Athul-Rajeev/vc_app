@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <functional>
 
 class NetworkManager
 {
@@ -16,7 +17,11 @@ public:
 
     std::string sendSynchronousTcp(const std::string& targetIp, const std::string& payload);
     void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler);
+    
+    void waitForEvents(int timeoutMs);
 
+    int getLocalTcpPort();
+    int getLocalUdpPort();
 private:
     INetworkProvider* m_activeProvider;
 };

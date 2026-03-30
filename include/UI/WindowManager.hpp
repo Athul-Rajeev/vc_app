@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iostream>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -7,6 +9,13 @@
 #include <queue>
 #include <chrono>
 #include <map>
+#include <memory>
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_opengl3.h>
+#include <GLFW/glfw3.h>
+#include "Core/Utils.hpp"
+#include "UI/IconsFontAwesome6.hpp"
 
 struct GLFWwindow;
 
@@ -17,6 +26,15 @@ struct VoicePeer
     bool isDeafened;
     std::string uuid;
     int channelId;
+};
+
+struct UiDisplayState
+{
+    std::vector<std::pair<int, std::string>> textChannelsList;
+    std::vector<std::pair<int, std::string>> voiceChannelsList;
+    std::vector<VoicePeer> voicePeers;
+    std::vector<std::string> chatHistory;
+    std::map<std::string, std::chrono::steady_clock::time_point> speakerActivity;
 };
 
 class WindowManager
@@ -42,7 +60,7 @@ public:
     std::string getPendingNewVoiceChannel();
     
     void setChannels(const std::vector<std::pair<int, std::string>>& textChannels, const std::vector<std::pair<int, std::string>>& voiceChannels);
-    void addIncomingMessage(const std::string& message);
+    void appendChatMessage(const std::string& message);
     void setChatHistory(const std::vector<std::string>& messages);
     std::string getPendingOutgoingMessage();
     void setVoicePeers(const std::vector<std::string>& peerDataList);
@@ -54,31 +72,24 @@ private:
 
     GLFWwindow* m_window;
 
-    // UI state
+    std::unique_ptr<UiDisplayState> m_frontBuffer;
+    std::unique_ptr<UiDisplayState> m_backBuffer;
+    std::mutex m_bufferMutex;
+    std::atomic<bool> m_isBackBufferDirty;
+
     std::atomic<int> m_selectedTextChannelId;
     std::atomic<int> m_activeVoiceChannelId;
-    
-    std::mutex m_channelsMutex;
-    std::vector<std::pair<int, std::string>> m_textChannelsList;
-    std::vector<std::pair<int, std::string>> m_voiceChannelsList;
-    
-    std::queue<std::string> m_pendingNewTextChannels;
-    std::queue<std::string> m_pendingNewVoiceChannels;
     
     std::atomic<bool> m_isMuted;
     std::atomic<bool> m_isDeafened;
     char m_chatInputBuffer[2048];
     char m_usernameInputBuffer[256];
-    std::vector<std::string> m_chatHistory;
     bool m_showSettingsModal;
     bool m_isLoggedIn;
     std::string m_username;
     
-    // Thread-safe networking state
-    std::mutex m_chatMutex;
+    std::mutex m_inputQueueMutex;
+    std::queue<std::string> m_pendingNewTextChannels;
+    std::queue<std::string> m_pendingNewVoiceChannels;
     std::queue<std::string> m_outgoingMessages;
-    
-    std::mutex m_peersMutex;
-    std::vector<VoicePeer> m_voicePeers;
-    std::map<std::string, std::chrono::steady_clock::time_point> m_speakerActivity;
 };
