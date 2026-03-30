@@ -412,13 +412,19 @@ void Application::clientThreadLoop(const std::string& serverIp)
             bool uiMuted = m_windowManager.isMuted();
             bool uiDeafened = m_windowManager.isDeafened();
 
-            // Needs an update flag for mute/deaf state, simplified here to check channel
-            if (uiVoiceChannelId != m_voiceChannelState.getCurrentChannelId())
+            // Trigger a state update if the channel, mute state, or deafened state changes
+            if (uiVoiceChannelId != m_voiceChannelState.getCurrentChannelId() || 
+                uiMuted != lastMutedState || 
+                uiDeafened != lastDeafenedState)
             {
                 m_voiceChannelState.joinChannel(uiVoiceChannelId);
+                lastMutedState = uiMuted;
+                lastDeafenedState = uiDeafened;
+
                 std::string statePayload = "STATE|" + localUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + 
                     (uiMuted ? "1" : "0") + "|" + 
                     (uiDeafened ? "1" : "0");
+                    
                 m_networkManager.sendSynchronousTcp(serverIp, statePayload);
             }
             

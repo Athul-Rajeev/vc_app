@@ -42,4 +42,7 @@ private:
     std::atomic<bool> m_isRunning;
     std::thread m_networkThread;
     bool m_isServerMode;
+
+    bool lastMutedState = false;
+    bool lastDeafenedState = false;
 };
