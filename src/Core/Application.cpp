@@ -448,22 +448,29 @@ void Application::clientThreadLoop(const std::string& serverIp)
             }
             
             // 4. Audio Processing
+
+            // Always drain the buffers to prevent memory leaks and socket blocking
             std::vector<uint8_t> outgoingAudio = m_audioEngine.getOutgoingPacket();
-            if (!outgoingAudio.empty() && !uiMuted && !uiDeafened)
-            {
-                std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
-                sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
-                m_networkManager.sendAudioPacket(serverIp, sfuPacket);
-            }
-            
             NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
-            if (!incomingPacket.payload.empty() && incomingPacket.payload.size() > uuidLen && !uiDeafened)
+
+            // Only process and send the audio if actually in a voice channel
+            if (m_voiceChannelState.getCurrentChannelId() != -1)
             {
-                std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
-                m_windowManager.markSpeakerActive(senderUuid);
+                if (!outgoingAudio.empty() && !uiMuted && !uiDeafened)
+                {
+                    std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
+                    sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
+                    m_networkManager.sendAudioPacket(serverIp, sfuPacket);
+                }
                 
-                std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + uuidLen, incomingPacket.payload.end());
-                m_audioEngine.pushIncomingPacket(opusAudioData);
+                if (!incomingPacket.payload.empty() && incomingPacket.payload.size() > uuidLen && !uiDeafened)
+                {
+                    std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
+                    m_windowManager.markSpeakerActive(senderUuid);
+                    
+                    std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + uuidLen, incomingPacket.payload.end());
+                    m_audioEngine.pushIncomingPacket(opusAudioData);
+                }
             }
         }
     }
