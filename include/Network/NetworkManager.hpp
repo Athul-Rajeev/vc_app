@@ -20,6 +20,8 @@ public:
     
     void waitForEvents(int timeoutMs);
 
+    int getLocalTcpPort();
+    int getLocalUdpPort();
 private:
     INetworkProvider* m_activeProvider;
 };

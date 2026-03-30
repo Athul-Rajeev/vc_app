@@ -23,4 +23,7 @@ public:
     virtual void pollTcpConnections(std::function<std::string(const std::string& incomingIp, const std::string& payload)> requestHandler) = 0;
     
     virtual void waitForEvents(int timeoutMs) = 0;
+
+    virtual int getLocalTcpPort() = 0;
+    virtual int getLocalUdpPort() = 0;
 };

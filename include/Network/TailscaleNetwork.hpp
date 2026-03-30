@@ -22,6 +22,9 @@ public:
     
     void waitForEvents(int timeoutMs) override;
 
+    int getLocalTcpPort() override;
+    int getLocalUdpPort() override;
+
 private:
     asio::io_context m_ioContext;
     asio::ip::udp::socket m_udpSocket;

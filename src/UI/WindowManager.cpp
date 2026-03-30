@@ -546,24 +546,35 @@ void WindowManager::setVoicePeers(const std::vector<std::string>& peerDataList)
         {
             continue;
         }
+        
         size_t secondColon = peerEntry.find(':', firstColon + 1);
         if (secondColon == std::string::npos)
         {
             continue;
         }
+        
         size_t thirdColon = peerEntry.find(':', secondColon + 1);
         if (thirdColon == std::string::npos)
         {
             continue;
         }
+        
         size_t fourthColon = peerEntry.find(':', thirdColon + 1);
+        if (fourthColon == std::string::npos)
+        {
+            // Fix: Prevent std::stoi exception if the server payload is malformed
+            continue; 
+        }
         
         VoicePeer peer;
         peer.username = peerEntry.substr(0, firstColon);
         peer.isMuted = (peerEntry.substr(firstColon + 1, secondColon - firstColon - 1) == "1");
         peer.isDeafened = (peerEntry.substr(secondColon + 1, thirdColon - secondColon - 1) == "1");
-        peer.uuid = peerEntry.substr(thirdColon + 1);
+        
+        // Fix: Properly bound the substring limit so it isolates just the UUID
+        peer.uuid = peerEntry.substr(thirdColon + 1, fourthColon - thirdColon - 1);
         peer.channelId = std::stoi(peerEntry.substr(fourthColon + 1));
+        
         m_backBuffer->voicePeers.push_back(peer);
     }
     m_isBackBufferDirty = true;

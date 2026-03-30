@@ -26,24 +26,28 @@ bool TailscaleNetwork::initialize(bool isServerMode)
     {
         m_udpSocket.open(asio::ip::udp::v4());
         
-        if (m_isServerMode) 
-        {
-            asio::ip::udp::endpoint localEndpoint(asio::ip::udp::v4(), m_port);
-            m_udpSocket.bind(localEndpoint);
-            std::cout << "TailscaleServer initialized. Bound to UDP 50000, TCP 50001." << std::endl;
-        } 
-        else 
-        {
-            std::cout << "TailscaleClient initialized. Bound to TCP 50001 for pushes." << std::endl;
-        }
-
-        // Both client and server must listen for TCP connections in your current push architecture
-        asio::ip::tcp::endpoint tcpEndpoint(asio::ip::tcp::v4(), 50001);
+        // Server gets 50000, Client gets 0 (OS assigned)
+        unsigned short udpPortToBind = m_isServerMode ? 50000 : 0;
+        asio::ip::udp::endpoint localUdpEndpoint(asio::ip::udp::v4(), udpPortToBind);
+        m_udpSocket.bind(localUdpEndpoint);
+        
+        unsigned short tcpPortToBind = m_isServerMode ? 50001 : 0;
+        asio::ip::tcp::endpoint tcpEndpoint(asio::ip::tcp::v4(), tcpPortToBind);
         m_tcpAcceptor.open(tcpEndpoint.protocol());
         m_tcpAcceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
         m_tcpAcceptor.bind(tcpEndpoint);
         m_tcpAcceptor.listen();
         m_tcpAcceptor.non_blocking(true);
+        
+        if (m_isServerMode) 
+        {
+            std::cout << "TailscaleServer initialized. Bound to UDP 50000, TCP 50001." << std::endl;
+        } 
+        else
+        {
+            std::cout << "TailscaleClient initialized. Bound to TCP " << m_tcpAcceptor.local_endpoint().port() 
+                      << " and UDP " << m_udpSocket.local_endpoint().port() << std::endl;
+        }
 
         return true;
     }
@@ -52,6 +56,24 @@ bool TailscaleNetwork::initialize(bool isServerMode)
         std::cerr << "Failed to initialize network sockets: " << errorException.what() << std::endl;
         return false;
     }
+}
+
+int TailscaleNetwork::getLocalTcpPort()
+{
+    if (m_tcpAcceptor.is_open())
+    {
+        return m_tcpAcceptor.local_endpoint().port();
+    }
+    return 0;
+}
+
+int TailscaleNetwork::getLocalUdpPort()
+{
+    if (m_udpSocket.is_open())
+    {
+        return m_udpSocket.local_endpoint().port();
+    }
+    return 0;
 }
 
 void TailscaleNetwork::sendData(const std::string& targetIp, const std::vector<uint8_t>& dataPayload)
@@ -108,34 +130,110 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
 {
     try 
     {
-        asio::ip::tcp::socket socket(m_ioContext);
-        asio::ip::tcp::resolver resolver(m_ioContext);
+        // Use a localized context so we can cleanly control the run loop and timeouts
+        asio::io_context localIoContext;
+        asio::ip::tcp::socket socket(localIoContext);
+        asio::ip::tcp::resolver resolver(localIoContext);
         
         std::string ip = targetIp;
+        std::string port = "50001"; 
+        
         size_t colonPos = targetIp.find(':');
         if (colonPos != std::string::npos)
         {
             ip = targetIp.substr(0, colonPos);
+            port = targetIp.substr(colonPos + 1);
         }
 
-        asio::ip::tcp::resolver::results_type endpoints = resolver.resolve(ip, "50001");
-        asio::connect(socket, endpoints);
-        asio::write(socket, asio::buffer(payload));
+        asio::ip::tcp::resolver::results_type endpoints = resolver.resolve(ip, port);
         
-        char response[8192];
-        asio::error_code ec;
-        size_t length = socket.read_some(asio::buffer(response), ec);
-        
-        socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        socket.close();
-        
-        if (!ec || ec == asio::error::eof) 
+        asio::error_code operationError;
+        asio::steady_timer timeoutTimer(localIoContext);
+
+        // 1. Connect with timeout
+        timeoutTimer.expires_after(std::chrono::milliseconds(2000));
+        timeoutTimer.async_wait([&socket](const asio::error_code& ec)
         {
-            return std::string(response, length);
+            if (!ec)
+            {
+                asio::error_code ignoreError;
+                socket.close(ignoreError);
+            }
+        });
+        
+        asio::async_connect(socket, endpoints, [&](const asio::error_code& ec, const asio::ip::tcp::endpoint&)
+        {
+            operationError = ec;
+            timeoutTimer.cancel();
+        });
+        
+        localIoContext.run();
+
+        if (operationError || !socket.is_open())
+        {
+            return "";
+        }
+
+        // 2. Write with timeout
+        localIoContext.restart();
+        timeoutTimer.expires_after(std::chrono::milliseconds(2000));
+        timeoutTimer.async_wait([&socket](const asio::error_code& ec)
+        {
+            if (!ec)
+            {
+                asio::error_code ignoreError;
+                socket.close(ignoreError);
+            }
+        });
+        
+        asio::async_write(socket, asio::buffer(payload), [&](const asio::error_code& ec, std::size_t)
+        {
+            operationError = ec;
+            timeoutTimer.cancel();
+        });
+        
+        localIoContext.run();
+
+        if (operationError)
+        {
+            return "";
+        }
+
+        // 3. Read with timeout
+        localIoContext.restart();
+        timeoutTimer.expires_after(std::chrono::milliseconds(2000));
+        timeoutTimer.async_wait([&socket](const asio::error_code& ec)
+        {
+            if (!ec)
+            {
+                asio::error_code ignoreError;
+                socket.close(ignoreError);
+            }
+        });
+        
+        char responseBuffer[8192] = {0};
+        size_t length = 0;
+        socket.async_read_some(asio::buffer(responseBuffer), [&](const asio::error_code& ec, std::size_t bytesRead)
+        {
+            operationError = ec;
+            length = bytesRead;
+            timeoutTimer.cancel();
+        });
+        
+        localIoContext.run();
+
+        asio::error_code shutdownError;
+        socket.shutdown(asio::ip::tcp::socket::shutdown_both, shutdownError);
+        socket.close(shutdownError);
+        
+        if (!operationError || operationError == asio::error::eof) 
+        {
+            return std::string(responseBuffer, length);
         }
     } 
-    catch (...) 
+    catch (const std::exception& networkException) 
     {
+        std::cerr << "TCP Sync Error: " << networkException.what() << std::endl;
     }
     
     return "";

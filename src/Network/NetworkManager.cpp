@@ -56,3 +56,21 @@ void NetworkManager::waitForEvents(int timeoutMs)
         m_activeProvider->waitForEvents(timeoutMs);
     }
 }
+
+int NetworkManager::getLocalTcpPort()
+{
+    if (m_activeProvider != nullptr)
+    {
+        return m_activeProvider->getLocalTcpPort();
+    }
+    return 0;
+}
+
+int NetworkManager::getLocalUdpPort()
+{
+    if (m_activeProvider != nullptr)
+    {
+        return m_activeProvider->getLocalUdpPort();
+    }
+    return 0;
+}

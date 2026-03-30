@@ -112,17 +112,22 @@ void Application::serverThreadLoop()
         {
             if (profile.activeChannelId == channelId)
             {
-                peersPayload += profile.username + ":" + (profile.isMuted ? "1" : "0") + ":" + (profile.isDeafened ? "1" : "0") + ":" + clientUuid + ",";
+                // Fix: Append the channelId to match client-side parsing expectations
+                peersPayload += profile.username + ":" + (profile.isMuted ? "1" : "0") + ":" + (profile.isDeafened ? "1" : "0") + ":" + clientUuid + ":" + std::to_string(channelId) + ",";
             }
         }
         
-        for (const auto& [clientUuid, profile] : clientMap)
+        // Fix: Execute the synchronous pushes in a detached thread to prevent deadlocks
+        std::thread([this, channelId, peersPayload, currentMap = clientMap]()
         {
-            if (profile.activeChannelId == channelId && !profile.tcpEndpoint.empty())
+            for (const auto& [clientUuid, profile] : currentMap)
             {
-                m_networkManager.sendSynchronousTcp(profile.tcpEndpoint, peersPayload);
+                if (profile.activeChannelId == channelId && !profile.tcpEndpoint.empty())
+                {
+                    m_networkManager.sendSynchronousTcp(profile.tcpEndpoint, peersPayload);
+                }
             }
-        }
+        }).detach();
     };
 
     auto tcpHandler = [this, &clientMap, &broadcastPeersToChannel](const std::string& incomingIp, const std::string& payload) -> std::string
@@ -136,18 +141,28 @@ void Application::serverThreadLoop()
         if (messageType == "LOGIN")
         {
             std::string username;
-            std::getline(payloadStream, username);
+            std::string clientTcpPort;
+            std::string clientUdpPort;
+            
+            std::getline(payloadStream, username, '|');
+            std::getline(payloadStream, clientTcpPort, '|');
+            std::getline(payloadStream, clientUdpPort);
             
             ClientProfile profile;
             profile.username = username;
             profile.activeChannelId = 0;
             profile.isMuted = false;
             profile.isDeafened = false;
-            profile.latestUdpEndpoint = incomingIp + ":50000";
-            profile.tcpEndpoint = incomingIp;
+            
+            std::string pushPort = clientTcpPort.empty() ? "50001" : clientTcpPort;
+            profile.tcpEndpoint = incomingIp + ":" + pushPort; 
+            
+            // Bind the OS-assigned UDP port
+            std::string audioPort = clientUdpPort.empty() ? "50000" : clientUdpPort;
+            profile.latestUdpEndpoint = incomingIp + ":" + audioPort;
             
             clientMap[senderUuid] = profile;
-            std::cout << "User logged in: " << username << std::endl;
+            std::cout << "User logged in: " << username << " [TCP: " << pushPort << ", UDP: " << audioPort << "]" << std::endl;
             return "ACK";
         }
         else if (messageType == "STATE")
@@ -194,13 +209,19 @@ void Application::serverThreadLoop()
 
             // PUSH architecture: Broadcast new message to all clients
             std::string pushMessage = "PUSH_CHAT|" + username + ": " + message;
-            for (const auto& [clientUuid, profile] : clientMap)
+            
+            // Fix: Execute the chat push asynchronously
+            std::thread([this, pushMessage, currentMap = clientMap]()
             {
-                if (!profile.tcpEndpoint.empty())
+                for (const auto& [clientUuid, profile] : currentMap)
                 {
-                    m_networkManager.sendSynchronousTcp(profile.tcpEndpoint, pushMessage);
+                    if (!profile.tcpEndpoint.empty())
+                    {
+                        m_networkManager.sendSynchronousTcp(profile.tcpEndpoint, pushMessage);
+                    }
                 }
-            }
+            }).detach();
+
             return "ACK";
         }
         else if (messageType == "REQ_CHAT_LOG")
@@ -308,7 +329,11 @@ void Application::clientThreadLoop(const std::string& serverIp)
             if (!hasLoggedIn)
             {
                 std::string localUsername = m_windowManager.getUsername();
-                m_networkManager.sendSynchronousTcp(serverIp, "LOGIN|" + localUuid + "|" + localUsername);
+                int localPushPort = m_networkManager.getLocalTcpPort();
+                int localAudioPort = m_networkManager.getLocalUdpPort();
+                
+                // Append BOTH ports to the LOGIN packet
+                m_networkManager.sendSynchronousTcp(serverIp, "LOGIN|" + localUuid + "|" + localUsername + "|" + std::to_string(localPushPort) + "|" + std::to_string(localAudioPort));
                 
                 std::string channelsResponse = m_networkManager.sendSynchronousTcp(serverIp, "SYNC_CHANNELS|");
                 processClientTcpPush(channelsResponse);
