@@ -8,6 +8,8 @@
 #include <RtAudio.h>
 #include <opus.h>
 #include <cmath>
+#include <iostream>
+
 class AudioEngine
 {
 public:

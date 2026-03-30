@@ -1,6 +1,5 @@
 #include "Database/DatabaseManager.hpp"
-#include <iostream>
-#include <sqlite3.h>
+
 
 DatabaseManager::DatabaseManager() : m_db(nullptr), m_isWorkerRunning(false)
 {

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <iostream>
 
 #define ASIO_STANDALONE
 #include <asio.hpp>

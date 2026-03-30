@@ -1,6 +1,4 @@
 #include "Audio/AudioEngine.hpp"
-#include <iostream>
-#include <cstring>
 
 AudioEngine::AudioEngine()
 {

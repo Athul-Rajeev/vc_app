@@ -1,5 +1,5 @@
 #include "Network/TailscaleNetwork.hpp"
-#include <iostream>
+
 
 TailscaleNetwork::TailscaleNetwork()
     : m_ioContext(), m_udpSocket(m_ioContext), m_tcpAcceptor(m_ioContext), m_isServerMode(false)

@@ -9,6 +9,9 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <iostream>
+#include <sqlite3.h>
+
 
 struct sqlite3;
 
