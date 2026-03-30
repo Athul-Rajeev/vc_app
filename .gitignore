@@ -4,6 +4,6 @@ third_party/
 compile_commands.json
 .cache/
 .voicechat_user
-*.db
+*.db*
 .agent/
 .voicechat_uuid

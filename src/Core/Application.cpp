@@ -262,6 +262,58 @@ void Application::serverThreadLoop()
             }
             return response;
         }
+        else if (messageType == "CREATE_CHANNEL")
+        {
+            std::string channelType;
+            std::string channelName;
+            std::getline(payloadStream, channelType, '|');
+            std::getline(payloadStream, channelName);
+
+            if (m_dbManager)
+            {
+                if (channelType == "TEXT")
+                {
+                    m_dbManager->addTextChannel(channelName);
+                }
+                else if (channelType == "VOICE")
+                {
+                    m_dbManager->addVoiceChannel(channelName);
+                }
+            }
+
+            // Rebuild the channel list from the database
+            std::string channelsResponse = "CHANNELS|";
+            if (m_dbManager)
+            {
+                auto textChannels = m_dbManager->fetchTextChannels();
+                channelsResponse += "TEXT:";
+                for (const auto& channel : textChannels)
+                {
+                    channelsResponse += std::to_string(channel.id) + "=" + channel.name + ",";
+                }
+                
+                channelsResponse += "|VOICE:";
+                auto voiceChannels = m_dbManager->fetchVoiceChannels();
+                for (const auto& channel : voiceChannels)
+                {
+                    channelsResponse += std::to_string(channel.id) + "=" + channel.name + ",";
+                }
+            }
+
+            // Asynchronously push the new channel list to all connected clients
+            std::thread([this, channelsResponse, currentMap = clientMap]()
+            {
+                for (const auto& [clientUuid, profile] : currentMap)
+                {
+                    if (!profile.tcpEndpoint.empty())
+                    {
+                        m_networkManager.sendSynchronousTcp(profile.tcpEndpoint, channelsResponse);
+                    }
+                }
+            }).detach();
+
+            return "ACK";
+        }
         return "UNKNOWN";
     };
 
@@ -375,6 +427,18 @@ void Application::clientThreadLoop(const std::string& serverIp)
             if (!outgoingMessage.empty())
             {
                 m_networkManager.sendSynchronousTcp(serverIp, "CHAT|" + localUuid + "|" + std::to_string(uiTextChannelId) + "|" + outgoingMessage);
+            }
+
+            std::string newTextChannel = m_windowManager.getPendingNewTextChannel();
+            if (!newTextChannel.empty())
+            {
+                m_networkManager.sendSynchronousTcp(serverIp, "CREATE_CHANNEL|" + localUuid + "|TEXT|" + newTextChannel);
+            }
+
+            std::string newVoiceChannel = m_windowManager.getPendingNewVoiceChannel();
+            if (!newVoiceChannel.empty())
+            {
+                m_networkManager.sendSynchronousTcp(serverIp, "CREATE_CHANNEL|" + localUuid + "|VOICE|" + newVoiceChannel);
             }
             
             // 4. Audio Processing

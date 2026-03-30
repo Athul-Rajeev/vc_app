@@ -7,6 +7,8 @@
 #include <condition_variable>
 #include <atomic>
 #include <functional>
+#include <future>
+#include <memory>
 
 struct sqlite3;
 
