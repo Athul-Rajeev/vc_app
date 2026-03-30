@@ -103,25 +103,27 @@ void Application::serverThreadLoop()
 
     std::map<std::string, ClientProfile> clientMap;
     
-    // Helper to broadcast state to everyone in a specific channel
-    auto broadcastPeersToChannel = [this, &clientMap](int channelId)
+    auto broadcastGlobalVoiceState = [this, &clientMap]()
     {
         std::string peersPayload = "PUSH_PEERS|";
+        
         for (const auto& [clientUuid, profile] : clientMap)
         {
-            if (profile.activeChannelId == channelId)
+            if (profile.activeChannelId != -1)
             {
-                // Fix: Append the channelId to match client-side parsing expectations
-                peersPayload += profile.username + ":" + (profile.isMuted ? "1" : "0") + ":" + (profile.isDeafened ? "1" : "0") + ":" + clientUuid + ":" + std::to_string(channelId) + ",";
+                peersPayload += profile.username + ":" 
+                                + (profile.isMuted ? "1" : "0") + ":" 
+                                + (profile.isDeafened ? "1" : "0") + ":" 
+                                + clientUuid + ":" 
+                                + std::to_string(profile.activeChannelId) + ",";
             }
         }
         
-        // Fix: Execute the synchronous pushes in a detached thread to prevent deadlocks
-        std::thread([this, channelId, peersPayload, currentMap = clientMap]()
+        std::thread([this, peersPayload, currentMap = clientMap]()
         {
             for (const auto& [clientUuid, profile] : currentMap)
             {
-                if (profile.activeChannelId == channelId && !profile.tcpEndpoint.empty())
+                if (!profile.tcpEndpoint.empty())
                 {
                     m_networkManager.sendSynchronousTcp(profile.tcpEndpoint, peersPayload);
                 }
@@ -129,7 +131,7 @@ void Application::serverThreadLoop()
         }).detach();
     };
 
-    auto tcpHandler = [this, &clientMap, &broadcastPeersToChannel](const std::string& incomingIp, const std::string& payload) -> std::string
+    auto tcpHandler = [this, &clientMap, &broadcastGlobalVoiceState](const std::string& incomingIp, const std::string& payload) -> std::string
     {
         std::istringstream payloadStream(payload);
         std::string messageType;
@@ -149,7 +151,7 @@ void Application::serverThreadLoop()
             
             ClientProfile profile;
             profile.username = username;
-            profile.activeChannelId = 0;
+            profile.activeChannelId = -1;
             profile.isMuted = false;
             profile.isDeafened = false;
             
@@ -175,19 +177,12 @@ void Application::serverThreadLoop()
             
             if (clientMap.find(senderUuid) != clientMap.end())
             {
-                int oldChannel = clientMap[senderUuid].activeChannelId;
-                int newChannel = std::stoi(channelIdString);
-                
-                clientMap[senderUuid].activeChannelId = newChannel;
+                clientMap[senderUuid].activeChannelId = std::stoi(channelIdString);
                 clientMap[senderUuid].isMuted = (mutedString == "1");
                 clientMap[senderUuid].isDeafened = (deafenedString == "1");
 
-                // Push new peer states to old channel and new channel
-                if (oldChannel != newChannel)
-                {
-                    broadcastPeersToChannel(oldChannel);
-                }
-                broadcastPeersToChannel(newChannel);
+                // Broadcast the entire server's voice state to everyone
+                broadcastGlobalVoiceState();
             }
             return "ACK";
         }
