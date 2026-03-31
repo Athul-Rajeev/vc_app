@@ -73,10 +73,21 @@ void PeerMixer::mixAudio(int16_t* outputBuffer, unsigned int nFrames, int audioC
                 {
                     mixBuffer[i] += tempBuffer[i];
                 }
+                peerState->m_lastPlayedSequence = expectedSequence;
+            }
+            else
+            {
+                // Decode failed on a real packet — log it, increment timeout,
+                // but do NOT advance sequence so the gap is acknowledged
+                std::cerr << "opus_decode error (peer packet): " << opus_strerror(decodeResult)
+                        << " for sequence " << expectedSequence << std::endl;
+                peerState->m_timeoutCounter++;
+                // Do NOT update m_lastPlayedSequence here
             }
         }
         else
         {
+            // PacketLossConcealment path — missing packet
             int decodeResult = opus_decode(peerState->m_opusDecoder, nullptr, 0, tempBuffer.data(), nFrames, 0);
             if (decodeResult >= 0)
             {
@@ -86,6 +97,13 @@ void PeerMixer::mixAudio(int16_t* outputBuffer, unsigned int nFrames, int audioC
                     mixBuffer[i] += tempBuffer[i];
                 }
             }
+            else
+            {
+                std::cerr << "opus_decode PacketLossConcealment error: " << opus_strerror(decodeResult) << std::endl;
+                peerState->m_timeoutCounter++; // still count toward eviction
+            }
+
+            peerState->m_lastPlayedSequence = expectedSequence; // advance regardless on PacketLossConcealment path
         }
 
         peerState->m_lastPlayedSequence = expectedSequence;
