@@ -106,8 +106,6 @@ void PeerMixer::mixAudio(int16_t* outputBuffer, unsigned int nFrames, int audioC
             peerState->m_lastPlayedSequence = expectedSequence; // advance regardless on PacketLossConcealment path
         }
 
-        peerState->m_lastPlayedSequence = expectedSequence;
-
         if (peerState->m_timeoutCounter >= StaleTimeoutFrames)
         {
             it = m_peerMap.erase(it);
