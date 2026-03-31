@@ -8,8 +8,8 @@
 #include <cmath>
 #include <iostream>
 
-#include "LockFreeQueue.hpp"
-#include "PeerMixer.hpp"
+#include "Utils/LockFreeQueue.hpp"
+#include "Audio/PeerMixer.hpp"
 
 constexpr size_t MaxAudioPacketSize = 4000;
 constexpr size_t OutgoingQueueCapacity = 100;

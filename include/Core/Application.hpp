@@ -13,9 +13,9 @@
 #include "UI/WindowManager.hpp"
 #include "Core/ChannelState.hpp"
 #include "Database/DatabaseManager.hpp"
-#include "Core/Utils.hpp"
+#include "Utils/Utils.hpp"
 #include "Network/TailscaleNetwork.hpp"
-#include "Audio/LockFreeQueue.hpp"
+#include "Utils/LockFreeQueue.hpp"
 
 struct PeerRoutingState
 {

@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 #include <opus.h>
-#include "JitterBuffer.hpp"
+#include "Utils/JitterBuffer.hpp"
 
 // Assuming 48000Hz sample rate and 960 frame size (50 frames per second)
 constexpr int FramesPerSecond = 50;

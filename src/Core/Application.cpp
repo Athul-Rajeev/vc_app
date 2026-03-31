@@ -437,7 +437,7 @@ void Application::clientControlLoop(const std::string& serverIp)
                 hasLoggedIn = true;
             }
             
-            // 2. Event-Driven Changes
+            // Event-Driven Changes
             int uiVoiceChannelId = m_windowManager.getActiveVoiceChannelId();
             bool uiMuted = m_windowManager.isMuted();
             bool uiDeafened = m_windowManager.isDeafened();
@@ -465,7 +465,7 @@ void Application::clientControlLoop(const std::string& serverIp)
                 m_networkManager.sendSynchronousTcp(serverIp, statePayload);
             }
             
-            // 3. Process Outgoing Events
+            // Process Outgoing Events
             int uiTextChannelId = m_windowManager.getSelectedTextChannelId();
             
             if (uiTextChannelId != m_textChannelState.getCurrentChannelId())
