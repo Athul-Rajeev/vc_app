@@ -10,10 +10,16 @@ Application::Application()
 
 Application::~Application()
 {
-    m_isRunning = false;
-    if (m_networkThread.joinable())
+    m_isRunning.store(false, std::memory_order_release);
+    m_audioEngine.stopStream(); // Stop hardware first
+
+    if (m_controlThread.joinable())
     {
-        m_networkThread.join();
+        m_controlThread.join();
+    }
+    if (m_routerThread.joinable())
+    {
+        m_routerThread.join();
     }
 }
 
@@ -56,14 +62,15 @@ bool Application::initialize(bool isServerMode)
 
 void Application::runMainLoop(const std::string& targetIp)
 {
-    m_isRunning = true;
+    m_isRunning.store(true, std::memory_order_release);
     
     if (m_isServerMode)
     {
         std::cout << "Starting Server Engine..." << std::endl;
-        m_networkThread = std::thread(&Application::serverThreadLoop, this);
+        m_controlThread = std::thread(&Application::serverControlLoop, this);
+        m_routerThread = std::thread(&Application::serverRouterLoop, this);
         
-        while (m_isRunning)
+        while (m_isRunning.load(std::memory_order_acquire))
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -71,25 +78,24 @@ void Application::runMainLoop(const std::string& targetIp)
     else
     {
         std::cout << "Starting Client Engine targeting: " << targetIp << std::endl;
-        m_networkThread = std::thread(&Application::clientThreadLoop, this, targetIp);
+        m_controlThread = std::thread(&Application::clientControlLoop, this, targetIp);
+        m_routerThread = std::thread(&Application::clientAudioLoop, this, targetIp);
 
-        while (m_isRunning && !m_windowManager.shouldClose())
+        while (m_isRunning.load(std::memory_order_acquire) && !m_windowManager.shouldClose())
         {
             m_windowManager.render();
         }
 
+        m_isRunning.store(false, std::memory_order_release);
         m_audioEngine.stopStream();
         m_windowManager.cleanup();
     }
 
-    m_isRunning = false;
-    if (m_networkThread.joinable())
-    {
-        m_networkThread.join();
-    }
+    if (m_controlThread.joinable()) m_controlThread.join();
+    if (m_routerThread.joinable()) m_routerThread.join();
 }
 
-void Application::serverThreadLoop()
+void Application::serverControlLoop()
 {
     struct ClientProfile
     {
@@ -164,6 +170,16 @@ void Application::serverThreadLoop()
             
             clientMap[senderUuid] = profile;
             std::cout << "User logged in: " << username << " [TCP: " << pushPort << ", UDP: " << audioPort << "]" << std::endl;
+            
+            // Push initial routing state to the UDP thread
+            PeerRoutingState routingUpdate;
+            std::strncpy(routingUpdate.uuid, senderUuid.c_str(), 36);
+            std::strncpy(routingUpdate.endpoint, profile.latestUdpEndpoint.c_str(), 64);
+            routingUpdate.activeChannelId = profile.activeChannelId;
+            m_routingQueue.forcePush(routingUpdate);
+
+            broadcastGlobalVoiceState();
+
             return "ACK";
         }
         else if (messageType == "STATE")
@@ -181,7 +197,13 @@ void Application::serverThreadLoop()
                 clientMap[senderUuid].isMuted = (mutedString == "1");
                 clientMap[senderUuid].isDeafened = (deafenedString == "1");
 
-                // Broadcast the entire server's voice state to everyone
+                // Push updated routing state to the UDP thread
+                PeerRoutingState routingUpdate;
+                std::strncpy(routingUpdate.uuid, senderUuid.c_str(), 36);
+                std::strncpy(routingUpdate.endpoint, clientMap[senderUuid].latestUdpEndpoint.c_str(), 64);
+                routingUpdate.activeChannelId = clientMap[senderUuid].activeChannelId;
+                m_routingQueue.forcePush(routingUpdate);
+                
                 broadcastGlobalVoiceState();
             }
             return "ACK";
@@ -204,7 +226,7 @@ void Application::serverThreadLoop()
             // PUSH architecture: Broadcast new message to all clients
             std::string pushMessage = "PUSH_CHAT|" + username + ": " + message;
             
-            // Fix: Execute the chat push asynchronously
+            // Execute the chat push asynchronously
             std::thread([this, pushMessage, currentMap = clientMap]()
             {
                 for (const auto& [clientUuid, profile] : currentMap)
@@ -311,63 +333,85 @@ void Application::serverThreadLoop()
         return "UNKNOWN";
     };
 
-    while (m_isRunning)
+    while (m_isRunning.load(std::memory_order_acquire))
     {
-        // Event-driven block: Sleeps thread via OS interrupts, 
-        // waking instantly on packet arrival or maxing at 10ms.
         m_networkManager.waitForEvents(10);
-
         m_networkManager.pollTcpConnections(tcpHandler);
-        NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
-        
-        if (incomingPacket.payload.empty() || incomingPacket.senderIp.empty() || incomingPacket.payload.size() <= uuidLen)
+    }
+}
+
+void Application::serverRouterLoop()
+{
+    struct RouterPeerState
+    {
+        std::string endpoint;
+        int activeChannelId = -1;
+    };
+    std::map<std::string, RouterPeerState> activeRouters;
+
+    while (m_isRunning.load(std::memory_order_acquire))
+    {
+        // 1. Drain Lock-Free Routing Updates from Control Thread
+        PeerRoutingState update;
+        while (m_routingQueue.pop(update))
         {
-            continue;
+            std::string uuidStr(update.uuid, 36);
+            activeRouters[uuidStr] = {std::string(update.endpoint), update.activeChannelId};
         }
 
-        std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
-
-        if (clientMap.find(packetSenderUuid) == clientMap.end())
+        // 2. Socket Draining Loop: Pull everything out of the OS buffer instantly
+        bool packetsDrained = false;
+        while (true) 
         {
-            continue;
-        }
-
-        auto& senderProfile = clientMap[packetSenderUuid];
-        senderProfile.latestUdpEndpoint = incomingPacket.senderIp;
-        int senderChannel = senderProfile.activeChannelId;
-
-        for (const auto& [otherUuid, profile] : clientMap)
-        {
-            bool isSelf = (otherUuid == packetSenderUuid);
-            bool sameChannel = (profile.activeChannelId == senderChannel);
-            bool hasEndpoint = !profile.latestUdpEndpoint.empty();
-
-            if (!isSelf && sameChannel && hasEndpoint)
+            NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+            if (incomingPacket.payload.empty())
             {
-                m_networkManager.sendAudioPacket(profile.latestUdpEndpoint, incomingPacket.payload);
+                break; // OS Buffer empty
             }
+            
+            packetsDrained = true;
+            
+            if (incomingPacket.payload.size() <= uuidLen) continue;
+
+            std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
+            if (activeRouters.find(packetSenderUuid) == activeRouters.end()) continue;
+
+            int senderChannel = activeRouters[packetSenderUuid].activeChannelId;
+            if (senderChannel == -1) continue;
+
+            // Auto-update endpoint if it changed
+            activeRouters[packetSenderUuid].endpoint = incomingPacket.senderIp;
+
+            for (const auto& [otherUuid, profile] : activeRouters)
+            {
+                if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && !profile.endpoint.empty())
+                {
+                    m_networkManager.sendAudioPacket(profile.endpoint, incomingPacket.payload);
+                }
+            }
+        }
+        
+        if (!packetsDrained)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 }
 
-void Application::clientThreadLoop(const std::string& serverIp)
+void Application::clientControlLoop(const std::string& serverIp)
 {
     std::string localUuid = Utils::getHardwareUUID();
     bool hasLoggedIn = false;
     
-    // Client-side push listener
     auto clientTcpHandler = [this](const std::string& incomingIp, const std::string& payload) -> std::string
     {
         processClientTcpPush(payload);
         return "ACK";
     };
 
-    while (m_isRunning)
+    while (m_isRunning.load(std::memory_order_acquire))
     {
-        //1. Block to save client CPU, freeing up cycles for the UI/Audio threads.
-        // It provides quick UI responsiveness (5ms poll rate) without spin-locking.
         m_networkManager.waitForEvents(5);
-
         m_networkManager.pollTcpConnections(clientTcpHandler);
 
         if (m_windowManager.isLoggedIn())
@@ -393,8 +437,37 @@ void Application::clientThreadLoop(const std::string& serverIp)
                 hasLoggedIn = true;
             }
             
-            // 2. Event-Driven Changes: Only hit the network if the user changes state
+            // Event-Driven Changes
+            int uiVoiceChannelId = m_windowManager.getActiveVoiceChannelId();
+            bool uiMuted = m_windowManager.isMuted();
+            bool uiDeafened = m_windowManager.isDeafened();
+
+            int currentVoice = m_activeVoiceChannelId.load(std::memory_order_relaxed);
+
+            if (uiVoiceChannelId != currentVoice || uiMuted != m_isMuted.load(std::memory_order_relaxed) || uiDeafened != m_isDeafened.load(std::memory_order_relaxed))
+            {
+                if (currentVoice == -1 && uiVoiceChannelId != -1)
+                {
+                    m_audioEngine.resetBuffers();
+                    m_audioEngine.startStream();
+                }
+                else if (currentVoice != -1 && uiVoiceChannelId == -1)
+                {
+                    m_audioEngine.stopStream();
+                    m_audioEngine.resetBuffers();
+                }
+
+                m_activeVoiceChannelId.store(uiVoiceChannelId, std::memory_order_release);
+                m_isMuted.store(uiMuted, std::memory_order_release);
+                m_isDeafened.store(uiDeafened, std::memory_order_release);
+
+                std::string statePayload = "STATE|" + localUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + (uiMuted ? "1" : "0") + "|" + (uiDeafened ? "1" : "0");
+                m_networkManager.sendSynchronousTcp(serverIp, statePayload);
+            }
+            
+            // Process Outgoing Events
             int uiTextChannelId = m_windowManager.getSelectedTextChannelId();
+            
             if (uiTextChannelId != m_textChannelState.getCurrentChannelId())
             {
                 m_textChannelState.joinChannel(uiTextChannelId);
@@ -402,35 +475,6 @@ void Application::clientThreadLoop(const std::string& serverIp)
                 processClientTcpPush(logResponse);
             }
 
-            int uiVoiceChannelId = m_windowManager.getActiveVoiceChannelId();
-            bool uiMuted = m_windowManager.isMuted();
-            bool uiDeafened = m_windowManager.isDeafened();
-
-            if (uiVoiceChannelId != m_voiceChannelState.getCurrentChannelId() || uiMuted != lastMutedState || uiDeafened != lastDeafenedState)
-            {
-                int previousChannelId = m_voiceChannelState.getCurrentChannelId();
-                m_voiceChannelState.joinChannel(uiVoiceChannelId);
-                
-                if (previousChannelId == -1 && uiVoiceChannelId != -1)
-                {
-                    m_audioEngine.resetBuffers();
-                    m_audioEngine.startStream();
-                }
-                else if (previousChannelId != -1 && uiVoiceChannelId == -1)
-                {
-                    m_audioEngine.stopStream();
-                    m_audioEngine.resetBuffers();
-                }
-
-                lastMutedState = uiMuted;
-                lastDeafenedState = uiDeafened;
-
-                std::string statePayload = "STATE|" + localUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + (uiMuted ? "1" : "0") + "|" + (uiDeafened ? "1" : "0");
-                    
-                m_networkManager.sendSynchronousTcp(serverIp, statePayload);
-            }
-            
-            // 3. Process Outgoing Events
             std::string outgoingMessage = m_windowManager.getPendingOutgoingMessage();
             if (!outgoingMessage.empty())
             {
@@ -448,31 +492,60 @@ void Application::clientThreadLoop(const std::string& serverIp)
             {
                 m_networkManager.sendSynchronousTcp(serverIp, "CREATE_CHANNEL|" + localUuid + "|VOICE|" + newVoiceChannel);
             }
-            
-            // 4. Audio Processing
-            // Always drain the buffers to prevent memory leaks and socket blocking
-            std::vector<uint8_t> outgoingAudio = m_audioEngine.getOutgoingPacket();
-            NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+        }
+    }
+}
 
-            // Only process and send the audio if actually in a voice channel
-            if (m_voiceChannelState.getCurrentChannelId() != -1)
+void Application::clientAudioLoop(const std::string& serverIp)
+{
+    std::string localUuid = Utils::getHardwareUUID();
+
+    while (m_isRunning.load(std::memory_order_acquire))
+    {
+        int currentChannel = m_activeVoiceChannelId.load(std::memory_order_acquire);
+        bool isDeafened = m_isDeafened.load(std::memory_order_acquire);
+        bool isMuted = m_isMuted.load(std::memory_order_acquire);
+
+        // Always drain buffers to prevent OS socket backup
+        bool activity = false;
+
+        // Drain Incoming UDP
+        while (true)
+        {
+            NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+            if (incomingPacket.payload.empty()) break;
+            
+            activity = true;
+
+            if (currentChannel != -1 && !isDeafened && incomingPacket.payload.size() > uuidLen)
             {
-                if (!outgoingAudio.empty() && !uiMuted && !uiDeafened)
-                {
-                    std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
-                    sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
-                    m_networkManager.sendAudioPacket(serverIp, sfuPacket);
-                }
+                std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
+                m_windowManager.markSpeakerActive(senderUuid);
                 
-                if (!incomingPacket.payload.empty() && incomingPacket.payload.size() > uuidLen && !uiDeafened)
-                {
-                    std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
-                    m_windowManager.markSpeakerActive(senderUuid);
-                    
-                    std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + uuidLen, incomingPacket.payload.end());
-                    m_audioEngine.pushIncomingPacket(opusAudioData);
-                }
+                std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + uuidLen, incomingPacket.payload.end());
+                m_audioEngine.pushIncomingPacket(senderUuid, opusAudioData);
             }
+        }
+
+        // Drain Outgoing Audio Engine Packets
+        while (true)
+        {
+            std::vector<uint8_t> outgoingAudio = m_audioEngine.getOutgoingPacket();
+            if (outgoingAudio.empty()) break;
+
+            activity = true;
+
+            if (currentChannel != -1 && !isMuted && !isDeafened)
+            {
+                std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
+                sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
+                m_networkManager.sendAudioPacket(serverIp, sfuPacket);
+            }
+        }
+
+        if (!activity)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 }

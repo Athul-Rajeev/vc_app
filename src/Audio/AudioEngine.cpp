@@ -1,17 +1,15 @@
 #include "Audio/AudioEngine.hpp"
+#include <chrono>
 
 AudioEngine::AudioEngine()
 {
     m_sampleRate = 48000;
     m_audioChannelCount = 1;
     m_frameSize = 960; 
-    m_maxPacketSize = 4000;
     m_opusEncoder = nullptr;
-    m_opusDecoder = nullptr;
     m_vadHoldFrames = 0;
-    m_sequenceCounter = 1;
-    m_lastPlayedSequence = 0;
-    m_isBuffering = true;
+    
+    m_sequenceCounter.store(1, std::memory_order_relaxed);
 }
 
 AudioEngine::~AudioEngine()
@@ -21,11 +19,6 @@ AudioEngine::~AudioEngine()
     if (m_opusEncoder != nullptr)
     {
         opus_encoder_destroy(m_opusEncoder);
-    }
-
-    if (m_opusDecoder != nullptr)
-    {
-        opus_decoder_destroy(m_opusDecoder);
     }
 }
 
@@ -37,13 +30,6 @@ bool AudioEngine::initialize()
     if (opusError != OPUS_OK)
     {
         std::cerr << "Failed to create Opus encoder." << std::endl;
-        return false;
-    }
-
-    m_opusDecoder = opus_decoder_create(m_sampleRate, m_audioChannelCount, &opusError);
-    if (opusError != OPUS_OK)
-    {
-        std::cerr << "Failed to create Opus decoder." << std::endl;
         return false;
     }
 
@@ -72,7 +58,11 @@ void AudioEngine::startStream()
 
         unsigned int bufferFrames = m_frameSize;
 
-        unsigned int streamStatus = m_audioSystem.openStream(&outputParams, &inputParams, RTAUDIO_SINT16, m_sampleRate, &bufferFrames, &routingCallback, this);
+        RtAudio::StreamOptions options;
+        options.flags = RTAUDIO_SCHEDULE_REALTIME;
+        options.priority = 15; 
+
+        unsigned int streamStatus = m_audioSystem.openStream(&outputParams, &inputParams, RTAUDIO_SINT16, m_sampleRate, &bufferFrames, &routingCallback, this, &options);
         
         if (streamStatus != 0)
         {
@@ -114,8 +104,6 @@ int AudioEngine::routingCallback(void* outputBuffer, void* inputBuffer, unsigned
 
 int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* inputBuffer, unsigned int nFrames)
 {
-    std::lock_guard<std::mutex> lockGuard(m_dataMutex);
-
     if (inputBuffer != nullptr)
     {
         double sumOfSquares = 0.0;
@@ -137,57 +125,27 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
         {
             m_vadHoldFrames--;
             
-            std::vector<uint8_t> encodedData(m_maxPacketSize + 12);
-            
-            uint32_t currentSequence = m_sequenceCounter++;
+            AudioPacket packet;
+            uint32_t currentSequence = m_sequenceCounter.fetch_add(1, std::memory_order_relaxed);
             uint64_t currentTimestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             
-            std::memcpy(encodedData.data(), &currentSequence, sizeof(uint32_t));
-            std::memcpy(encodedData.data() + sizeof(uint32_t), &currentTimestamp, sizeof(uint64_t));
+            std::memcpy(packet.data, &currentSequence, sizeof(uint32_t));
+            std::memcpy(packet.data + sizeof(uint32_t), &currentTimestamp, sizeof(uint64_t));
 
-            int bytesEncoded = opus_encode(m_opusEncoder, inputBuffer, nFrames, encodedData.data() + 12, m_maxPacketSize);
+            int bytesEncoded = opus_encode(m_opusEncoder, inputBuffer, nFrames, packet.data + 12, MaxAudioPacketSize - 12);
 
             if (bytesEncoded > 0)
             {
-                encodedData.resize(12 + bytesEncoded);
-                m_outgoingPackets.push_back(encodedData);
+                packet.size = 12 + bytesEncoded;
+                m_outgoingPackets.forcePush(packet);
             }
         }
     }
 
     if (outputBuffer != nullptr)
     {
-        if (m_isBuffering && m_jitterBuffer.size() >= 3)
-        {
-            m_isBuffering = false;
-        }
-        else if (!m_isBuffering && m_jitterBuffer.empty())
-        {
-            m_isBuffering = true;
-        }
-
-        if (!m_isBuffering && !m_jitterBuffer.empty())
-        {
-            auto bufferIterator = m_jitterBuffer.begin();
-            m_lastPlayedSequence = bufferIterator->first;
-            std::vector<uint8_t> packetData = bufferIterator->second;
-            m_jitterBuffer.erase(bufferIterator);
-
-            int decodeResult = opus_decode(m_opusDecoder, packetData.data(), packetData.size(), outputBuffer, nFrames, 0);
-            
-            if (decodeResult < 0)
-            {
-                std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
-            }
-        }
-        else
-        {
-            int decodeResult = opus_decode(m_opusDecoder, nullptr, 0, outputBuffer, nFrames, 0);
-            if (decodeResult < 0)
-            {
-                std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
-            }
-        }
+        std::memset(outputBuffer, 0, nFrames * m_audioChannelCount * sizeof(int16_t));
+        m_peerMixer.mixAudio(outputBuffer, nFrames, m_audioChannelCount);
     }
 
     return 0;
@@ -195,23 +153,20 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
 
 std::vector<uint8_t> AudioEngine::getOutgoingPacket()
 {
-    std::lock_guard<std::mutex> lockGuard(m_dataMutex);
     std::vector<uint8_t> packetData;
+    AudioPacket internalPacket;
 
-    if (!m_outgoingPackets.empty())
+    if (m_outgoingPackets.pop(internalPacket))
     {
-        packetData = m_outgoingPackets.front();
-        m_outgoingPackets.erase(m_outgoingPackets.begin());
+        packetData.assign(internalPacket.data, internalPacket.data + internalPacket.size);
     }
 
     return packetData;
 }
 
-void AudioEngine::pushIncomingPacket(const std::vector<uint8_t>& opusPacket)
+void AudioEngine::pushIncomingPacket(const std::string& senderUuid, const std::vector<uint8_t>& opusPacket)
 {
-    std::lock_guard<std::mutex> lockGuard(m_dataMutex);
-    
-    if (opusPacket.size() <= 12)
+    if (opusPacket.size() <= 12 || opusPacket.size() > MaxAudioPacketSize)
     {
         return;
     }
@@ -219,22 +174,18 @@ void AudioEngine::pushIncomingPacket(const std::vector<uint8_t>& opusPacket)
     uint32_t sequenceNumber;
     std::memcpy(&sequenceNumber, opusPacket.data(), sizeof(uint32_t));
     
-    if (m_lastPlayedSequence != 0 && sequenceNumber <= m_lastPlayedSequence)
-    {
-        return;
-    }
-
-    std::vector<uint8_t> payloadData(opusPacket.begin() + 12, opusPacket.end());
-    m_jitterBuffer[sequenceNumber] = payloadData;
+    m_peerMixer.pushPacket(senderUuid, sequenceNumber, opusPacket.data() + 12, opusPacket.size() - 12);
 }
 
 void AudioEngine::resetBuffers()
 {
-    std::lock_guard<std::mutex> lockGuard(m_dataMutex);
-    m_outgoingPackets.clear();
-    m_jitterBuffer.clear();
-    m_lastPlayedSequence = 0;
-    m_sequenceCounter = 1;
+    AudioPacket dummy;
+    while (m_outgoingPackets.pop(dummy)) 
+    {
+    }
+    
+    m_peerMixer.reset();
+    
+    m_sequenceCounter.store(1, std::memory_order_release);
     m_vadHoldFrames = 0;
-    m_isBuffering = true;
 }
