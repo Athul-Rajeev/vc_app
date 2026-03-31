@@ -1,14 +1,24 @@
 #pragma once
-#include <cstring>
-#include <vector>
+
 #include <cstdint>
-#include <mutex>
-#include <map>
-#include <chrono>
+#include <vector>
+#include <string>
 #include <RtAudio.h>
 #include <opus.h>
 #include <cmath>
 #include <iostream>
+
+#include "LockFreeQueue.hpp"
+#include "PeerMixer.hpp"
+
+constexpr size_t MaxAudioPacketSize = 4000;
+constexpr size_t OutgoingQueueCapacity = 100;
+
+struct AudioPacket
+{
+    uint8_t data[MaxAudioPacketSize];
+    size_t size = 0;
+};
 
 class AudioEngine
 {
@@ -21,7 +31,7 @@ public:
     void stopStream();
 
     std::vector<uint8_t> getOutgoingPacket();
-    void pushIncomingPacket(const std::vector<uint8_t>& opusPacket);
+    void pushIncomingPacket(const std::string& senderUuid, const std::vector<uint8_t>& opusPacket);
     void resetBuffers();
 
 private:
@@ -31,20 +41,14 @@ private:
 
     RtAudio m_audioSystem;
     OpusEncoder* m_opusEncoder;
-    OpusDecoder* m_opusDecoder;
 
     int m_sampleRate;
     int m_audioChannelCount;
     int m_frameSize;
-    int m_maxPacketSize;
 
-    std::mutex m_dataMutex;
+    PeerMixer m_peerMixer;
+    LockFreeQueue<AudioPacket, OutgoingQueueCapacity> m_outgoingPackets;
     
-    std::map<uint32_t, std::vector<uint8_t>> m_jitterBuffer;
-    std::vector<std::vector<uint8_t>> m_outgoingPackets;
-    
-    uint32_t m_sequenceCounter;
-    uint32_t m_lastPlayedSequence;
-    bool m_isBuffering;
+    std::atomic<uint32_t> m_sequenceCounter;
     int m_vadHoldFrames;
 };

@@ -49,6 +49,7 @@ set(SOURCES
     src/Network/NetworkManager.cpp
     src/Network/TailscaleNetwork.cpp
     src/Audio/AudioEngine.cpp
+    src/Audio/PeerMixer.cpp
     src/UI/WindowManager.cpp
     src/Database/DatabaseManager.cpp
     third_party/imgui/imgui.cpp
