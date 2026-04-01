@@ -75,6 +75,11 @@ bool DatabaseManager::initialize(const std::string& dbPath)
         return false;
     }
     
+    // START THE WORKER THREAD HERE
+    // This must happen before addTextChannel or addVoiceChannel are called
+    m_isWorkerRunning = true;
+    m_workerThread = std::thread(&DatabaseManager::workerThreadLoop, this);
+    
     auto existingTextChannels = fetchTextChannels();
     if (existingTextChannels.empty()) 
     {
@@ -87,9 +92,6 @@ bool DatabaseManager::initialize(const std::string& dbPath)
     {
         addVoiceChannel("Voice General");
     }
-    
-    m_isWorkerRunning = true;
-    m_workerThread = std::thread(&DatabaseManager::workerThreadLoop, this);
     
     return true;
 }
