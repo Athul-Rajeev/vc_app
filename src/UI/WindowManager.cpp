@@ -72,8 +72,9 @@ bool WindowManager::initialize()
     iconsConfig.PixelSnapH = true;
     iconsConfig.OversampleH = 1;
     iconsConfig.OversampleV = 1;
+    iconsConfig.GlyphOffset.y = 2.0f;
     static const ImWchar iconsRanges[] = { ICON_MIN_FA, ICON_MAX_16_FA, 0 };
-    imguiIO.Fonts->AddFontFromFileTTF("assets/fa-solid-900.ttf", 14.0f, &iconsConfig, iconsRanges);
+    imguiIO.Fonts->AddFontFromFileTTF("assets/fa-solid-900.ttf", 13.0f, &iconsConfig, iconsRanges);
 
     setupDarkTheme();
 
@@ -111,6 +112,7 @@ void WindowManager::setupDarkTheme()
     style.FrameRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
     style.WindowBorderSize = 0.0f;
+
 }
 
 void WindowManager::render()
@@ -348,22 +350,105 @@ void WindowManager::render()
     
     const float chatInputHeight = 50.0f;
     ImGui::BeginChild("ChatHistory", ImVec2(0, viewport->WorkSize.y - chatInputHeight - 50.0f), false);
+    ImGui::SetCursorPosY(8);
+
     for (const auto& message : m_frontBuffer->chatHistory) 
     {
         ImGui::SetCursorPosX(15);
         ImGui::TextWrapped("%s", message.c_str());
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2);
+        ImGui::Spacing();
     }
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
     {
         ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
-    
-    ImGui::SetCursorPos(ImVec2(15, viewport->WorkSize.y - chatInputHeight - 5.0f));
-    ImGui::PushItemWidth(chatAreaWidth - 30);
-    if (ImGui::InputText("##ChatInput", m_chatInputBuffer, IM_ARRAYSIZE(m_chatInputBuffer), ImGuiInputTextFlags_EnterReturnsTrue)) 
+
+    float inputY = viewport->WorkSize.y - chatInputHeight + (chatInputHeight - 22) * 0.5;
+    float buttonY = inputY - 4.0f;
+
+
+    ImGui::SetCursorPos(ImVec2(15, buttonY));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    if (ImGui::Button(ICON_FA_FACE_SMILE "##emoji", ImVec2(30, 30)))
     {
-        if (m_chatInputBuffer[0] != '\0') 
+        ImGui::OpenPopup("EmojiPicker");
+    }
+    ImGui::PopStyleColor();
+
+    ImGui::SetNextWindowPos(
+        ImVec2(sidebarWidth + 15, viewport->WorkSize.y - chatInputHeight - 225),
+        ImGuiCond_Always
+    );
+    ImGui::SetNextWindowSize(ImVec2(220, 210), ImGuiCond_Always);
+
+    if (ImGui::BeginPopup("EmojiPicker", ImGuiWindowFlags_NoMove))
+    {
+        const char* emojis[] = {
+            ICON_FA_FACE_SMILE,       ICON_FA_FACE_GRIN,
+            ICON_FA_FACE_LAUGH,       ICON_FA_FACE_GRIN_HEARTS,
+            ICON_FA_FACE_GRIN_TEARS,  ICON_FA_FACE_GRIN_WINK,
+            ICON_FA_FACE_KISS,        ICON_FA_FACE_KISS_WINK_HEART,
+            ICON_FA_FACE_FROWN,       ICON_FA_FACE_SAD_CRY,
+            ICON_FA_FACE_ANGRY,       ICON_FA_FACE_SURPRISE,
+            ICON_FA_FACE_TIRED,       ICON_FA_FACE_MEH,
+            ICON_FA_FACE_DIZZY,       ICON_FA_FACE_ROLLING_EYES,
+            ICON_FA_FACE_GRIMACE,     ICON_FA_FACE_FLUSHED,
+            ICON_FA_FACE_SAD_TEAR,    ICON_FA_FACE_SMILE_BEAM,
+            ICON_FA_FACE_SMILE_WINK,  ICON_FA_FACE_GRIN_BEAM,
+            ICON_FA_FACE_GRIN_SQUINT, ICON_FA_FACE_GRIN_STARS,
+            ICON_FA_THUMBS_UP,        ICON_FA_THUMBS_DOWN,
+            ICON_FA_HEART,            ICON_FA_HEART_CRACK,
+            ICON_FA_STAR,             ICON_FA_FIRE,
+            ICON_FA_BOLT,             ICON_FA_SKULL,
+            ICON_FA_MUSIC,            ICON_FA_ROCKET,
+            ICON_FA_GHOST,            ICON_FA_PAW,
+            ICON_FA_CROWN,            ICON_FA_GEM,
+            ICON_FA_BOMB,             ICON_FA_PEACE,
+            ICON_FA_RAINBOW,          ICON_FA_SNOWFLAKE,
+            ICON_FA_SUN,              ICON_FA_MOON,
+            ICON_FA_CLOUD,            ICON_FA_DRAGON,
+            ICON_FA_CAT,              ICON_FA_DOG,
+        };
+
+        int count = sizeof(emojis) / sizeof(emojis[0]);
+
+        ImGui::BeginChild("EmojiScroll", ImVec2(210, 170), false);
+        for (int i = 0; i < count; i++)
+        {
+            if (i % 6 != 0) ImGui::SameLine();
+            ImGui::PushID(i);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            if (ImGui::Button(emojis[i], ImVec2(30, 30)))
+            {
+                std::string current(m_chatInputBuffer);
+                std::string insertion;
+                if (!current.empty() && current.back() != ' ')
+                {
+                    insertion = " " + std::string(emojis[i]) + " ";
+                }
+                else
+                {
+                    insertion = std::string(emojis[i]) + " ";
+                }
+                strncat(m_chatInputBuffer, insertion.c_str(),
+                        sizeof(m_chatInputBuffer) - strlen(m_chatInputBuffer) - 1);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        ImGui::EndPopup();
+    }
+
+// Chat input
+    ImGui::SetCursorPos(ImVec2(50, inputY));
+    ImGui::PushItemWidth(chatAreaWidth - 65);
+    if (ImGui::InputText("##ChatInput", m_chatInputBuffer, IM_ARRAYSIZE(m_chatInputBuffer), ImGuiInputTextFlags_EnterReturnsTrue))
+    {
+        if (m_chatInputBuffer[0] != '\0')
         {
             std::lock_guard<std::mutex> lock(m_inputQueueMutex);
             m_outgoingMessages.push(std::string(m_chatInputBuffer));
@@ -372,27 +457,31 @@ void WindowManager::render()
         }
     }
     ImGui::PopItemWidth();
-    
-    ImGui::EndChild();
+    ImGui::PopItemWidth();
+    ImGui::PopItemWidth();
 
-    ImGui::End();
+    ImGui::PopItemWidth();
+    ImGui::PopItemWidth();
+        ImGui::EndChild();
 
-    if (m_showSettingsModal) 
-    {
+        ImGui::End();
+
+        if (m_showSettingsModal) 
+        {
+        }
+
+        renderLoginModal();
+
+        ImGui::Render();
+        int displayWidth, displayHeight;
+        glfwGetFramebufferSize(m_window, &displayWidth, &displayHeight);
+        glViewport(0, 0, displayWidth, displayHeight);
+        glClearColor(0.192f, 0.200f, 0.220f, 1.000f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glfwSwapBuffers(m_window);
     }
-
-    renderLoginModal();
-
-    ImGui::Render();
-    int displayWidth, displayHeight;
-    glfwGetFramebufferSize(m_window, &displayWidth, &displayHeight);
-    glViewport(0, 0, displayWidth, displayHeight);
-    glClearColor(0.192f, 0.200f, 0.220f, 1.000f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    glfwSwapBuffers(m_window);
-}
 
 void WindowManager::cleanup()
 {
