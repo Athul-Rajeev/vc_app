@@ -457,31 +457,26 @@ void WindowManager::render()
         }
     }
     ImGui::PopItemWidth();
-    ImGui::PopItemWidth();
-    ImGui::PopItemWidth();
+    ImGui::EndChild();
 
-    ImGui::PopItemWidth();
-    ImGui::PopItemWidth();
-        ImGui::EndChild();
+    ImGui::End();
 
-        ImGui::End();
-
-        if (m_showSettingsModal) 
-        {
-        }
-
-        renderLoginModal();
-
-        ImGui::Render();
-        int displayWidth, displayHeight;
-        glfwGetFramebufferSize(m_window, &displayWidth, &displayHeight);
-        glViewport(0, 0, displayWidth, displayHeight);
-        glClearColor(0.192f, 0.200f, 0.220f, 1.000f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        glfwSwapBuffers(m_window);
+    if (m_showSettingsModal) 
+    {
     }
+
+    renderLoginModal();
+
+    ImGui::Render();
+    int displayWidth, displayHeight;
+    glfwGetFramebufferSize(m_window, &displayWidth, &displayHeight);
+    glViewport(0, 0, displayWidth, displayHeight);
+    glClearColor(0.192f, 0.200f, 0.220f, 1.000f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    glfwSwapBuffers(m_window);
+}
 
 void WindowManager::cleanup()
 {
