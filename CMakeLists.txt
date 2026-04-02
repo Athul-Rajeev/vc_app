@@ -53,6 +53,7 @@ set(SOURCES
     src/Audio/PeerMixer.cpp
     src/UI/WindowManager.cpp
     src/Database/DatabaseManager.cpp
+    src/Utils/LoggerSetup.cpp
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_demo.cpp
     third_party/imgui/imgui_draw.cpp

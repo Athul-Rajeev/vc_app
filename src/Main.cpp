@@ -1,9 +1,13 @@
 #include "Core/Application.hpp"
+#include <spdlog/spdlog.h>
+#include "Utils/LoggerSetup.hpp"
 
 int main(int argc, char* argv[])
 {
     bool isServerMode = false;
     std::string targetIp = "127.0.0.1";
+    LoggerSetup::initializeAsyncLogger();
+    spdlog::set_level(spdlog::level::debug);
 
     if (argc >= 2)
     {
@@ -20,7 +24,7 @@ int main(int argc, char* argv[])
             }
             else
             {
-                std::cerr << "Usage for client: VoiceChatApp --client <ServerIp>\n";
+                spdlog::error("Usage for client: VoiceChatApp --client <ServerIp>");
                 return 1;
             }
         }
@@ -34,7 +38,7 @@ int main(int argc, char* argv[])
 
     if (!mainApp.initialize(isServerMode))
     {
-        std::cerr << "Failed to initialize application." << std::endl;
+        spdlog::error("Failed to initialize application.");
         return 1;
     }
 
