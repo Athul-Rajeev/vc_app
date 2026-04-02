@@ -1,36 +1,43 @@
 #include "Database/DatabaseManager.hpp"
-
+#include <spdlog/spdlog.h>
 
 DatabaseManager::DatabaseManager() : m_db(nullptr), m_isWorkerRunning(false)
 {
+    spdlog::trace("DatabaseManager instantiated");
 }
 
 DatabaseManager::~DatabaseManager() 
 {
+    spdlog::trace("DatabaseManager shutting down");
     if (m_isWorkerRunning)
     {
         m_isWorkerRunning = false;
         m_queueCondition.notify_all();
         if (m_workerThread.joinable())
         {
+            spdlog::trace("Joining database worker thread");
             m_workerThread.join();
         }
     }
 
     if (m_db) 
     {
+        spdlog::trace("Closing SQLite database connection");
         sqlite3_close(m_db);
     }
 }
 
 bool DatabaseManager::initialize(const std::string& dbPath) 
 {
+    spdlog::debug("Initializing DatabaseManager with path: {}", dbPath);
+
     if (sqlite3_open(dbPath.c_str(), &m_db) != SQLITE_OK) 
     {
-        std::cerr << "Can't open database: " << sqlite3_errmsg(m_db) << std::endl;
+        spdlog::critical("Can't open database: {}", sqlite3_errmsg(m_db));
         return false;
     }
 
+    spdlog::trace("Setting SQLite PRAGMAs (WAL mode, NORMAL synchronous)");
     sqlite3_exec(m_db, "PRAGMA journal_mode=WAL;", 0, 0, 0);
     sqlite3_exec(m_db, "PRAGMA synchronous=NORMAL;", 0, 0, 0);
 
@@ -56,33 +63,35 @@ bool DatabaseManager::initialize(const std::string& dbPath)
     char* errorMessage = nullptr;
     if (sqlite3_exec(m_db, sqlCreateMessages, 0, 0, &errorMessage) != SQLITE_OK) 
     {
-        std::cerr << "SQL error (messages): " << errorMessage << std::endl;
+        spdlog::critical("SQL error (messages): {}", errorMessage);
         sqlite3_free(errorMessage);
         return false;
     }
     
     if (sqlite3_exec(m_db, sqlCreateTextChannels, 0, 0, &errorMessage) != SQLITE_OK) 
     {
-        std::cerr << "SQL error (text_channels): " << errorMessage << std::endl;
+        spdlog::critical("SQL error (text_channels): {}", errorMessage);
         sqlite3_free(errorMessage);
         return false;
     }
     
     if (sqlite3_exec(m_db, sqlCreateVoiceChannels, 0, 0, &errorMessage) != SQLITE_OK) 
     {
-        std::cerr << "SQL error (voice_channels): " << errorMessage << std::endl;
+        spdlog::critical("SQL error (voice_channels): {}", errorMessage);
         sqlite3_free(errorMessage);
         return false;
     }
     
     // START THE WORKER THREAD HERE
     // This must happen before addTextChannel or addVoiceChannel are called
+    spdlog::trace("Starting DatabaseManager worker thread");
     m_isWorkerRunning = true;
     m_workerThread = std::thread(&DatabaseManager::workerThreadLoop, this);
     
     auto existingTextChannels = fetchTextChannels();
     if (existingTextChannels.empty()) 
     {
+        spdlog::info("No text channels found, creating default ones");
         addTextChannel("general");
         addTextChannel("development");
     }
@@ -90,14 +99,17 @@ bool DatabaseManager::initialize(const std::string& dbPath)
     auto existingVoiceChannels = fetchVoiceChannels();
     if (existingVoiceChannels.empty()) 
     {
+        spdlog::info("No voice channels found, creating default ones");
         addVoiceChannel("Voice General");
     }
     
+    spdlog::info("DatabaseManager initialized successfully");
     return true;
 }
 
 void DatabaseManager::workerThreadLoop()
 {
+    spdlog::trace("Worker thread loop entered");
     while (m_isWorkerRunning)
     {
         std::function<void()> task;
@@ -110,6 +122,7 @@ void DatabaseManager::workerThreadLoop()
 
             if (!m_isWorkerRunning && m_taskQueue.empty())
             {
+                spdlog::trace("Worker thread loop exiting cleanly");
                 return;
             }
 
@@ -126,12 +139,15 @@ void DatabaseManager::workerThreadLoop()
 
 void DatabaseManager::storeMessage(int channelId, const std::string& uuid, const std::string& username, const std::string& message)
 {
+    spdlog::trace("Queueing storeMessage task for channel {} from user {}", channelId, username);
+    
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
         m_taskQueue.push([this, channelId, uuid, username, message]()
         {
             if (!m_db)
             {
+                spdlog::error("Attempted to store message, but database is not initialized");
                 return;
             }
 
@@ -147,13 +163,17 @@ void DatabaseManager::storeMessage(int channelId, const std::string& uuid, const
                 
                 if (sqlite3_step(stmt) != SQLITE_DONE) 
                 {
-                    std::cerr << "Execution failed: " << sqlite3_errmsg(m_db) << std::endl;
+                    spdlog::error("Message execution failed: {}", sqlite3_errmsg(m_db));
+                }
+                else
+                {
+                    spdlog::trace("Message successfully inserted into database");
                 }
                 sqlite3_finalize(stmt);
             } 
             else 
             {
-                std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(m_db) << std::endl;
+                spdlog::error("Failed to prepare message insert statement: {}", sqlite3_errmsg(m_db));
             }
         });
     }
@@ -162,9 +182,12 @@ void DatabaseManager::storeMessage(int channelId, const std::string& uuid, const
 
 std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int limit) 
 {
+    spdlog::trace("Fetching up to {} last messages for channel {}", limit, channelId);
     std::vector<ChatMessage> history;
+    
     if (!m_db)
     {
+        spdlog::error("Attempted to fetch messages, but database is not initialized");
         return history;
     }
 
@@ -199,10 +222,11 @@ std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int l
             history.push_back(chatMessage);
         }
         sqlite3_finalize(stmt);
+        spdlog::debug("Fetched {} messages for channel {}", history.size(), channelId);
     } 
     else 
     {
-        std::cerr << "Failed to fetch messages: " << sqlite3_errmsg(m_db) << std::endl;
+        spdlog::error("Failed to fetch messages: {}", sqlite3_errmsg(m_db));
     }
 
     return history;
@@ -210,9 +234,12 @@ std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int l
 
 std::vector<Channel> DatabaseManager::fetchTextChannels() 
 {
+    spdlog::trace("Fetching text channels from database");
     std::vector<Channel> channels;
+    
     if (!m_db)
     {
+        spdlog::error("Attempted to fetch text channels, but database is not initialized");
         return channels;
     }
     
@@ -228,15 +255,24 @@ std::vector<Channel> DatabaseManager::fetchTextChannels()
             channels.push_back(channel);
         }
         sqlite3_finalize(stmt);
+        spdlog::debug("Fetched {} text channels", channels.size());
     }
+    else
+    {
+        spdlog::error("Failed to prepare fetch text channels statement: {}", sqlite3_errmsg(m_db));
+    }
+    
     return channels;
 }
 
 std::vector<Channel> DatabaseManager::fetchVoiceChannels() 
 {
+    spdlog::trace("Fetching voice channels from database");
     std::vector<Channel> channels;
+    
     if (!m_db)
     {
+        spdlog::error("Attempted to fetch voice channels, but database is not initialized");
         return channels;
     }
     
@@ -252,12 +288,19 @@ std::vector<Channel> DatabaseManager::fetchVoiceChannels()
             channels.push_back(channel);
         }
         sqlite3_finalize(stmt);
+        spdlog::debug("Fetched {} voice channels", channels.size());
     }
+    else
+    {
+        spdlog::error("Failed to prepare fetch voice channels statement: {}", sqlite3_errmsg(m_db));
+    }
+    
     return channels;
 }
 
 int DatabaseManager::addTextChannel(const std::string& name)
 {
+    spdlog::debug("Queueing task to add new text channel: '{}'", name);
     auto promise = std::make_shared<std::promise<int>>();
     auto future = promise->get_future();
 
@@ -267,6 +310,7 @@ int DatabaseManager::addTextChannel(const std::string& name)
         {
             if (!m_db)
             {
+                spdlog::error("Attempted to add text channel '{}', but database is not initialized", name);
                 promise->set_value(-1);
                 return;
             }
@@ -277,17 +321,20 @@ int DatabaseManager::addTextChannel(const std::string& name)
                 sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
                 if (sqlite3_step(stmt) != SQLITE_DONE)
                 {
-                    std::cerr << "Failed to add text channel: " << sqlite3_errmsg(m_db) << std::endl;
+                    spdlog::error("Failed to add text channel '{}': {}", name, sqlite3_errmsg(m_db));
                     promise->set_value(-1);
                 }
                 else
                 {
-                    promise->set_value(sqlite3_last_insert_rowid(m_db));
+                    int insertId = static_cast<int>(sqlite3_last_insert_rowid(m_db));
+                    spdlog::info("Successfully added text channel '{}' with ID {}", name, insertId);
+                    promise->set_value(insertId);
                 }
                 sqlite3_finalize(stmt);
             }
             else
             {
+                spdlog::error("Failed to prepare add text channel statement: {}", sqlite3_errmsg(m_db));
                 promise->set_value(-1);
             }
         });
@@ -298,6 +345,7 @@ int DatabaseManager::addTextChannel(const std::string& name)
 
 int DatabaseManager::addVoiceChannel(const std::string& name)
 {
+    spdlog::debug("Queueing task to add new voice channel: '{}'", name);
     auto promise = std::make_shared<std::promise<int>>();
     auto future = promise->get_future();
 
@@ -307,6 +355,7 @@ int DatabaseManager::addVoiceChannel(const std::string& name)
         {
             if (!m_db)
             {
+                spdlog::error("Attempted to add voice channel '{}', but database is not initialized", name);
                 promise->set_value(-1);
                 return;
             }
@@ -317,17 +366,20 @@ int DatabaseManager::addVoiceChannel(const std::string& name)
                 sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
                 if (sqlite3_step(stmt) != SQLITE_DONE)
                 {
-                    std::cerr << "Failed to add voice channel: " << sqlite3_errmsg(m_db) << std::endl;
+                    spdlog::error("Failed to add voice channel '{}': {}", name, sqlite3_errmsg(m_db));
                     promise->set_value(-1);
                 }
                 else
                 {
-                    promise->set_value(sqlite3_last_insert_rowid(m_db));
+                    int insertId = static_cast<int>(sqlite3_last_insert_rowid(m_db));
+                    spdlog::info("Successfully added voice channel '{}' with ID {}", name, insertId);
+                    promise->set_value(insertId);
                 }
                 sqlite3_finalize(stmt);
             }
             else
             {
+                spdlog::error("Failed to prepare add voice channel statement: {}", sqlite3_errmsg(m_db));
                 promise->set_value(-1);
             }
         });
