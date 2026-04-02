@@ -82,66 +82,71 @@ void TailscaleNetwork::startTcpAcceptor(std::function<std::string(const std::str
 {
     m_tcpAcceptor.async_accept(asio::make_strand(m_tcpContext), [this, requestHandler](const asio::error_code& error, asio::ip::tcp::socket socket)
     {
-        if (!error)
-        {
-            auto newSession = std::make_shared<TcpSession>(std::move(socket));
-            
-            newSession->start(
-                [this, requestHandler](std::shared_ptr<TcpSession> activeSession, const std::string& payload)
-                {
-                    // Basic parser to peek at the UUID for session management
-                    std::string messageType = payload.substr(0, payload.find('|'));
-                    size_t firstPipe = payload.find('|');
-                    size_t secondPipe = payload.find('|', firstPipe + 1);
-                    
-                    if (firstPipe != std::string::npos && secondPipe != std::string::npos)
-                    {
-                        std::string clientUuid = payload.substr(firstPipe + 1, secondPipe - firstPipe - 1);
-                        
-                        if (messageType == "LOGIN")
-                        {
-                            std::lock_guard<std::mutex> lock(m_sessionMutex);
-                            
-                            // ACTIVE OVERRIDE: Kill the ghost connection if it exists
-                            if (m_activeSessions.find(clientUuid) != m_activeSessions.end())
-                            {
-                                std::cout << "Ghost connection detected for " << clientUuid << ". Overriding." << std::endl;
-                                m_activeSessions[clientUuid]->closeSession();
-                            }
-                            
-                            activeSession->setClientUuid(clientUuid);
-                            m_activeSessions[clientUuid] = activeSession;
-                        }
-                    }
-                    
-                    // Pass the payload up to Application.cpp's logic
-                    std::string response = requestHandler(activeSession->getRemoteEndpoint(), payload);
-                    if (!response.empty())
-                    {
-                        activeSession->sendData(response);
-                    }
-                },
-                [this](std::shared_ptr<TcpSession> disconnectedSession)
-                {
-                    // Clean up map on disconnect or timeout
-                    std::lock_guard<std::mutex> lock(m_sessionMutex);
-                    std::string clientUuid = disconnectedSession->getClientUuid();
-                    
-                    if (!clientUuid.empty() && m_activeSessions.count(clientUuid) && m_activeSessions[clientUuid] == disconnectedSession)
-                    {
-                        m_activeSessions.erase(clientUuid);
-                        std::cout << "Session purged for UUID: " << clientUuid << std::endl;
-                    }
-                });
-        }
-        else
+        // Loop the acceptor first to ensure it always restarts
+        auto loopAcceptor = [&]() { startTcpAcceptor(requestHandler); };
+
+        if (error)
         {
             // Fail-safe: Back off slightly if OS is out of file descriptors
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            loopAcceptor();
+            return;
         }
 
-        // Loop the acceptor
-        startTcpAcceptor(requestHandler);
+        auto newSession = std::make_shared<TcpSession>(std::move(socket));
+
+        auto onMessage = [this, requestHandler](std::shared_ptr<TcpSession> activeSession, const std::string& payload)
+        {
+            size_t firstPipe  = payload.find('|');
+            size_t secondPipe = payload.find('|', firstPipe + 1);
+            std::string messageType = payload.substr(0, firstPipe);
+
+            bool hasValidPipes = firstPipe != std::string::npos && secondPipe != std::string::npos;
+            if (hasValidPipes && messageType == "LOGIN")
+            {
+                std::string clientUuid = payload.substr(firstPipe + 1, secondPipe - firstPipe - 1);
+                std::lock_guard<std::mutex> lock(m_sessionMutex);
+
+                // ACTIVE OVERRIDE: Kill the ghost connection if it exists
+                auto existing = m_activeSessions.find(clientUuid);
+                if (existing != m_activeSessions.end())
+                {
+                    std::cout << "Ghost connection detected for " << clientUuid << ". Overriding." << std::endl;
+                    existing->second->closeSession();
+                }
+
+                activeSession->setClientUuid(clientUuid);
+                m_activeSessions[clientUuid] = activeSession;
+            }
+
+            // Pass the payload up to Application.cpp's logic
+            std::string response = requestHandler(activeSession->getRemoteEndpoint(), payload);
+            if (!response.empty())
+            {
+                activeSession->sendData(response);
+            }
+        };
+
+        auto onDisconnect = [this](std::shared_ptr<TcpSession> disconnectedSession)
+        {
+            // Clean up map on disconnect or timeout
+            std::lock_guard<std::mutex> lock(m_sessionMutex);
+            std::string clientUuid = disconnectedSession->getClientUuid();
+
+            bool isTracked = !clientUuid.empty()
+                          && m_activeSessions.count(clientUuid)
+                          && m_activeSessions[clientUuid] == disconnectedSession;
+
+            if (!isTracked)
+            {
+                return;
+            }
+            m_activeSessions.erase(clientUuid);
+            std::cout << "Session purged for UUID: " << clientUuid << std::endl;
+        };
+
+        newSession->start(onMessage, onDisconnect);
+        loopAcceptor();
     });
 }
 

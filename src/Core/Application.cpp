@@ -1,6 +1,8 @@
 #include "Core/Application.hpp"
 
 static constexpr size_t uuidLen = 36;
+static constexpr int serverHeartbeatTimeoutMs = 45000;
+static constexpr int heartbeatIntervalMs = serverHeartbeatTimeoutMs - 3750;
 
 Application::Application()
 {
@@ -327,7 +329,6 @@ void Application::clientControlLoop(const std::string& serverIp)
     bool hasLoggedIn = false;
     
     auto lastHeartbeatTime = std::chrono::steady_clock::now();
-    const int heartbeatIntervalMs = 41250;
 
     auto pushHandler = [this](const std::string& payload)
     {
