@@ -538,7 +538,12 @@ void Application::processClientTcpPush(const std::string& payload)
 {
     spdlog::trace("Processing client TCP push payload. Length: {}", payload.length());
 
-    if (payload.find("PUSH_CHAT|") == 0)
+    if (payload == "ACK" || payload == "HEARTBEAT_ACK")
+    {
+        spdlog::trace("Server acknowledged request: {}", payload);
+        return;
+    }
+    else if (payload.find("PUSH_CHAT|") == 0)
     {
         std::string newMessage = payload.substr(10);
         m_windowManager.appendChatMessage(newMessage);
@@ -609,6 +614,6 @@ void Application::processClientTcpPush(const std::string& payload)
     }
     else
     {
-        spdlog::warn("Received unrecognized push payload prefix", payload);
+        spdlog::warn("Received unrecognized push payload prefix: {}", payload);
     }
 }

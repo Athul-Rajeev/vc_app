@@ -7,7 +7,7 @@ int main(int argc, char* argv[])
     bool isServerMode = false;
     std::string targetIp = "127.0.0.1";
     LoggerSetup::initializeAsyncLogger();
-    spdlog::set_level(spdlog::level::debug);
+    spdlog::set_level(spdlog::level::info);
 
     if (argc >= 2)
     {
