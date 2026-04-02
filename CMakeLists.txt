@@ -48,6 +48,7 @@ set(SOURCES
     src/Core/ChannelState.cpp
     src/Network/NetworkManager.cpp
     src/Network/TailscaleNetwork.cpp
+    src/Network/TcpSession.cpp
     src/Audio/AudioEngine.cpp
     src/Audio/PeerMixer.cpp
     src/UI/WindowManager.cpp

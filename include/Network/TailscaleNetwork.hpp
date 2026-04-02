@@ -1,9 +1,12 @@
 #pragma once
 #include "Network/INetworkProvider.hpp"
+#include "Network/TcpSession.hpp"
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <iostream>
+#include <thread>
+#include <map>
+#include <mutex>
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
@@ -18,18 +21,33 @@ public:
     void sendData(const std::string& targetIp, const std::vector<uint8_t>& dataPayload) override;
     NetworkPacket receiveData() override;
 
-    std::string sendSynchronousTcp(const std::string& targetIp, const std::string& payload) override;
     void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler) override;
-    
-    void waitForEvents(int timeoutMs) override;
 
-    int getLocalTcpPort() override;
     int getLocalUdpPort() override;
+    bool connectPersistentTcp(const std::string& targetIp, std::function<void(const std::string&)> onMessage) override;
+    void sendPersistentTcp(const std::string& payload) override;
+    void broadcastTcp(const std::string& payload) override;
+    void sendTcpTo(const std::string& uuid, const std::string& payload) override;
 
 private:
-    asio::io_context m_ioContext;
+    void startTcpAcceptor(std::function<std::string(const std::string&, const std::string&)> requestHandler);
+
+    asio::io_context m_tcpContext;
+    asio::io_context m_udpContext;
+    
+    std::unique_ptr<asio::executor_work_guard<asio::io_context::executor_type>> m_tcpWorkGuard;
+    std::unique_ptr<asio::executor_work_guard<asio::io_context::executor_type>> m_udpWorkGuard;
+
+    std::thread m_tcpThread;
+    std::thread m_udpThread;
+
     asio::ip::udp::socket m_udpSocket;
     asio::ip::tcp::acceptor m_tcpAcceptor;
+    
+    std::mutex m_sessionMutex;
+    std::map<std::string, std::shared_ptr<TcpSession>> m_activeSessions;
+
     int m_port;
     bool m_isServerMode;
+    std::shared_ptr<TcpSession> m_clientSession;
 };

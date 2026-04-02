@@ -32,38 +32,12 @@ NetworkPacket NetworkManager::receiveAudioPacket()
     return NetworkPacket{"", std::vector<uint8_t>()};
 }
 
-std::string NetworkManager::sendSynchronousTcp(const std::string& targetIp, const std::string& payload)
-{
-    if (m_activeProvider != nullptr)
-    {
-        return m_activeProvider->sendSynchronousTcp(targetIp, payload);
-    }
-    return "";
-}
-
 void NetworkManager::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
 {
     if (m_activeProvider != nullptr)
     {
         m_activeProvider->pollTcpConnections(requestHandler);
     }
-}
-
-void NetworkManager::waitForEvents(int timeoutMs)
-{
-    if (m_activeProvider != nullptr)
-    {
-        m_activeProvider->waitForEvents(timeoutMs);
-    }
-}
-
-int NetworkManager::getLocalTcpPort()
-{
-    if (m_activeProvider != nullptr)
-    {
-        return m_activeProvider->getLocalTcpPort();
-    }
-    return 0;
 }
 
 int NetworkManager::getLocalUdpPort()
@@ -73,4 +47,37 @@ int NetworkManager::getLocalUdpPort()
         return m_activeProvider->getLocalUdpPort();
     }
     return 0;
+}
+
+bool NetworkManager::connectPersistentTcp(const std::string& targetIp, std::function<void(const std::string&)> onMessage)
+{
+    if (m_activeProvider != nullptr)
+    {
+        return m_activeProvider->connectPersistentTcp(targetIp, onMessage);
+    }
+    return false;
+}
+
+void NetworkManager::sendPersistentTcp(const std::string& payload)
+{
+    if (m_activeProvider != nullptr)
+    {
+        m_activeProvider->sendPersistentTcp(payload);
+    }
+}
+
+void NetworkManager::broadcastTcp(const std::string& payload)
+{
+    if (m_activeProvider != nullptr)
+    {
+        m_activeProvider->broadcastTcp(payload);
+    }
+}
+
+void NetworkManager::sendTcpTo(const std::string& uuid, const std::string& payload)
+{
+    if (m_activeProvider != nullptr)
+    {
+        m_activeProvider->sendTcpTo(uuid, payload);
+    }
 }

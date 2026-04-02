@@ -15,13 +15,14 @@ public:
     void sendAudioPacket(const std::string& targetIp, const std::vector<uint8_t>& packetData);
     NetworkPacket receiveAudioPacket();
 
-    std::string sendSynchronousTcp(const std::string& targetIp, const std::string& payload);
     void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler);
-    
-    void waitForEvents(int timeoutMs);
 
-    int getLocalTcpPort();
     int getLocalUdpPort();
+
+    bool connectPersistentTcp(const std::string& targetIp, std::function<void(const std::string&)> onMessage);
+    void sendPersistentTcp(const std::string& payload);
+    void broadcastTcp(const std::string& payload);
+    void sendTcpTo(const std::string& uuid, const std::string& payload);
 private:
     INetworkProvider* m_activeProvider;
 };
