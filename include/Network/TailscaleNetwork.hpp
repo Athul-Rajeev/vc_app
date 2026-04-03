@@ -1,6 +1,7 @@
 #pragma once
 #include "Network/INetworkProvider.hpp"
 #include "Network/TcpSession.hpp"
+#include <shared_mutex>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -19,7 +20,8 @@ public:
 
     bool initialize(bool isServerMode) override;
     void sendData(const std::string& targetIp, const std::vector<uint8_t>& dataPayload) override;
-    NetworkPacket receiveData() override;
+    void sendData(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& dataPayload) override;
+    bool receiveData(NetworkPacket& outPacket) override;
 
     void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler) override;
 
@@ -47,6 +49,9 @@ private:
     std::mutex m_sessionMutex;
     std::map<std::string, std::shared_ptr<TcpSession>> m_activeSessions;
 
+    std::unordered_map<std::string, asio::ip::udp::endpoint> m_endpointCache;
+    std::shared_mutex m_endpointCacheMutex;
+    std::vector<uint8_t> m_receiveBuffer;
     int m_port;
     bool m_isServerMode;
     std::shared_ptr<TcpSession> m_clientSession;

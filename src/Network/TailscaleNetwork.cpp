@@ -1,4 +1,5 @@
 #include "Network/TailscaleNetwork.hpp"
+#include "Network/INetworkProvider.hpp"
 #include <spdlog/spdlog.h>
 
 TailscaleNetwork::TailscaleNetwork()
@@ -9,6 +10,7 @@ TailscaleNetwork::TailscaleNetwork()
       m_isServerMode(false)
 {
     m_port = 50000;
+    m_receiveBuffer.resize(1500);
     spdlog::trace("TailscaleNetwork instantiated");
 }
 
@@ -205,23 +207,49 @@ void TailscaleNetwork::sendData(const std::string& targetIp, const std::vector<u
 {
     try
     {
-        asio::ip::udp::resolver resolver(m_udpContext);
+        asio::ip::udp::endpoint targetEndpoint;
         
-        std::string ip = targetIp;
-        std::string port = std::to_string(m_port);
-        
-        size_t colonPos = targetIp.find(':');
-        if (colonPos != std::string::npos) 
         {
-            ip = targetIp.substr(0, colonPos);
-            port = targetIp.substr(colonPos + 1);
+            std::shared_lock<std::shared_mutex> readLock(m_endpointCacheMutex);
+            auto mapIterator = m_endpointCache.find(targetIp);
+            
+            if (mapIterator != m_endpointCache.end())
+            {
+                targetEndpoint = mapIterator->second;
+            }
+            else
+            {
+                readLock.unlock();
+                std::unique_lock<std::shared_mutex> writeLock(m_endpointCacheMutex);
+                
+                mapIterator = m_endpointCache.find(targetIp);
+                if (mapIterator != m_endpointCache.end())
+                {
+                    targetEndpoint = mapIterator->second;
+                }
+                else
+                {
+                    asio::ip::udp::resolver resolver(m_udpContext);
+                    std::string ip = targetIp;
+                    std::string port = std::to_string(m_port);
+                    
+                    size_t colonPos = targetIp.find(':');
+                    if (colonPos != std::string::npos) 
+                    {
+                        ip = targetIp.substr(0, colonPos);
+                        port = targetIp.substr(colonPos + 1);
+                    }
+
+                    spdlog::info("Resolving and caching new UDP endpoint: {}:{}", ip, port);
+                    auto endpoints = resolver.resolve(asio::ip::udp::v4(), ip, port);
+                    targetEndpoint = *endpoints.begin();
+                    
+                    m_endpointCache[targetIp] = targetEndpoint;
+                }
+            }
         }
 
-        spdlog::trace("Resolving UDP target endpoint: {}:{}", ip, port);
-        asio::ip::udp::resolver::results_type endpoints = resolver.resolve(asio::ip::udp::v4(), ip, port);
-        
-        spdlog::trace("Sending {} bytes via UDP to {}:{}", dataPayload.size(), ip, port);
-        m_udpSocket.send_to(asio::buffer(dataPayload), *endpoints.begin());
+        m_udpSocket.send_to(asio::buffer(dataPayload), targetEndpoint);
     }
     catch (const std::exception& errorException)
     {
@@ -229,25 +257,32 @@ void TailscaleNetwork::sendData(const std::string& targetIp, const std::vector<u
     }
 }
 
-NetworkPacket TailscaleNetwork::receiveData()
+void TailscaleNetwork::sendData(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& dataPayload)
 {
-    std::vector<uint8_t> bufferData(1500); 
+    try
+    {
+        m_udpSocket.send_to(asio::buffer(dataPayload), targetEndpoint);
+    }
+    catch (const std::exception& errorException)
+    {
+        spdlog::debug("Exception caught while sending raw UDP packet: {}", errorException.what());
+    }
+}
+
+bool TailscaleNetwork::receiveData(NetworkPacket& outPacket)
+{
     asio::ip::udp::endpoint senderEndpoint;
     
     try
     {
         if (m_udpSocket.available() > 0)
         {
-            size_t bytesReceived = m_udpSocket.receive_from(asio::buffer(bufferData), senderEndpoint);
-            bufferData.resize(bytesReceived);
+            size_t bytesReceived = m_udpSocket.receive_from(asio::buffer(m_receiveBuffer), senderEndpoint);
             
-            std::string senderStr = senderEndpoint.address().to_string() + ":" + std::to_string(senderEndpoint.port());
-            spdlog::trace("Received {} bytes via UDP from {}", bytesReceived, senderStr);
+            outPacket.senderEndpoint = senderEndpoint;
+            outPacket.payload.assign(m_receiveBuffer.begin(), m_receiveBuffer.begin() + bytesReceived);
             
-            NetworkPacket pack;
-            pack.senderIp = senderStr;
-            pack.payload = std::move(bufferData);
-            return pack;
+            return true;
         }
     }
     catch (const std::exception& errorException)
@@ -255,7 +290,7 @@ NetworkPacket TailscaleNetwork::receiveData()
         spdlog::error("Error receiving UDP packet: {}", errorException.what());
     }
     
-    return NetworkPacket{"", std::vector<uint8_t>()}; 
+    return false; 
 }
 
 bool TailscaleNetwork::connectPersistentTcp(const std::string& targetIp, std::function<void(const std::string&)> onMessage)

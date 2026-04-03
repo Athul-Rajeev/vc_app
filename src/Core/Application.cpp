@@ -1,4 +1,5 @@
 #include "Core/Application.hpp"
+#include "Network/INetworkProvider.hpp"
 #include <spdlog/spdlog.h>
 
 static constexpr size_t uuidLen = 36;
@@ -298,9 +299,11 @@ void Application::serverRouterLoop()
 
     struct RouterPeerState
     {
-        std::string endpoint;
+        asio::ip::udp::endpoint endpoint;
+        bool hasValidEndpoint = false;
         int activeChannelId = -1;
     };
+    
     std::map<std::string, RouterPeerState> activeRouters;
 
     while (m_isRunning.load(std::memory_order_acquire))
@@ -309,17 +312,31 @@ void Application::serverRouterLoop()
         while (m_routingQueue.pop(update))
         {
             std::string uuidStr(update.uuid, uuidLen);
-            activeRouters[uuidStr] = {std::string(update.endpoint), update.activeChannelId};
+            
+            if (activeRouters.find(uuidStr) == activeRouters.end())
+            {
+                activeRouters[uuidStr] = {asio::ip::udp::endpoint(), false, update.activeChannelId};
+            }
+            else
+            {
+                activeRouters[uuidStr].activeChannelId = update.activeChannelId;
+            }
             spdlog::trace("Router state updated for UUID: {}. Channel: {}", uuidStr, update.activeChannelId);
         }
 
         bool packetsDrained = false;
+        NetworkPacket incomingPacket;
+        
         while (true) 
         {
-            NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
-            if (incomingPacket.payload.empty())
+            if (!m_networkManager.receiveAudioPacket(incomingPacket))
             {
                 break;
+            }
+            
+            if (incomingPacket.payload.empty())
+            {
+                continue;
             }
             
             packetsDrained = true;
@@ -342,12 +359,15 @@ void Application::serverRouterLoop()
                 continue;
             }
 
-            activeRouters[packetSenderUuid].endpoint = incomingPacket.senderIp;
+            // Update the router table with their exact live UDP endpoint
+            activeRouters[packetSenderUuid].endpoint = incomingPacket.senderEndpoint;
+            activeRouters[packetSenderUuid].hasValidEndpoint = true;
 
             for (const auto& [otherUuid, profile] : activeRouters)
             {
-                if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && !profile.endpoint.empty())
+                if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && profile.hasValidEndpoint)
                 {
+                    // Calls the new highly-efficient overload
                     m_networkManager.sendAudioPacket(profile.endpoint, incomingPacket.payload);
                 }
             }
@@ -488,10 +508,14 @@ void Application::clientAudioLoop(const std::string& serverIp)
         bool isMuted = m_isMuted.load(std::memory_order_acquire);
 
         bool hasActivity = false;
-
+        NetworkPacket incomingPacket;
         while (true)
         {
-            NetworkPacket incomingPacket = m_networkManager.receiveAudioPacket();
+            if(!m_networkManager.receiveAudioPacket(incomingPacket))
+            {
+                break;
+            }
+
             if (incomingPacket.payload.empty())
             {
                 break;

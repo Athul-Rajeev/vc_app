@@ -22,14 +22,22 @@ void NetworkManager::sendAudioPacket(const std::string& targetIp, const std::vec
     }
 }
 
-NetworkPacket NetworkManager::receiveAudioPacket()
+void NetworkManager::sendAudioPacket(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& packetData)
+{
+    if (m_activeProvider != nullptr && !packetData.empty())
+    {
+        m_activeProvider->sendData(targetEndpoint, packetData);
+    }
+}
+
+bool NetworkManager::receiveAudioPacket(NetworkPacket& outPacket)
 {
     if (m_activeProvider != nullptr)
     {
-        return m_activeProvider->receiveData();
+        return m_activeProvider->receiveData(outPacket);
     }
     
-    return NetworkPacket{"", std::vector<uint8_t>()};
+    return false;
 }
 
 void NetworkManager::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)

@@ -13,7 +13,8 @@ public:
 
     void setProvider(INetworkProvider* networkProvider);
     void sendAudioPacket(const std::string& targetIp, const std::vector<uint8_t>& packetData);
-    NetworkPacket receiveAudioPacket();
+    bool receiveAudioPacket(NetworkPacket& outPacket);
+    void sendAudioPacket(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& packetData);
 
     void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler);
 
