@@ -1,4 +1,5 @@
 #pragma once
+
 #include "Network/INetworkProvider.hpp"
 #include "Network/TcpSession.hpp"
 #include <shared_mutex>
@@ -8,6 +9,7 @@
 #include <thread>
 #include <map>
 #include <mutex>
+#include <functional>
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
@@ -19,9 +21,14 @@ public:
     ~TailscaleNetwork() override;
 
     bool initialize(bool isServerMode) override;
+    
     void sendData(const std::string& targetIp, const std::vector<uint8_t>& dataPayload) override;
     void sendData(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& dataPayload) override;
-    bool receiveData(NetworkPacket& outPacket) override;
+    
+    void sendDataAsync(const std::string& targetIp, std::shared_ptr<std::vector<uint8_t>> dataPayload) override;
+    void sendDataAsync(const asio::ip::udp::endpoint& targetEndpoint, std::shared_ptr<std::vector<uint8_t>> dataPayload) override;
+    
+    void setUdpReceiveCallback(std::function<void(const asio::ip::udp::endpoint&, const uint8_t*, size_t)> callback) override;
 
     void pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler) override;
 
@@ -33,6 +40,7 @@ public:
 
 private:
     void startTcpAcceptor(std::function<std::string(const std::string&, const std::string&)> requestHandler);
+    void startUdpReceiveLoop();
 
     asio::io_context m_tcpContext;
     asio::io_context m_udpContext;
@@ -45,6 +53,7 @@ private:
 
     asio::ip::udp::socket m_udpSocket;
     asio::ip::tcp::acceptor m_tcpAcceptor;
+    asio::ip::udp::endpoint m_remoteEndpoint;
     
     std::mutex m_sessionMutex;
     std::map<std::string, std::shared_ptr<TcpSession>> m_activeSessions;
@@ -55,4 +64,6 @@ private:
     int m_port;
     bool m_isServerMode;
     std::shared_ptr<TcpSession> m_clientSession;
+    
+    std::function<void(const asio::ip::udp::endpoint&, const uint8_t*, size_t)> m_udpReceiveCallback;
 };

@@ -7,6 +7,9 @@
 #include <atomic>
 #include <sstream>
 #include <map>
+#include <unordered_map>
+#include <array>
+#include <functional>
 #include "Network/INetworkProvider.hpp"
 #include "Network/NetworkManager.hpp"
 #include "Audio/AudioEngine.hpp"
@@ -17,11 +20,33 @@
 #include "Network/TailscaleNetwork.hpp"
 #include "Utils/LockFreeQueue.hpp"
 
+static constexpr size_t uuidLen = 36;
+
 struct PeerRoutingState
 {
-    char uuid[36];
+    char uuid[uuidLen];
     char endpoint[64];
     int activeChannelId;
+};
+
+struct UuidHash
+{
+    std::size_t operator()(const std::array<uint8_t, uuidLen>& key) const
+    {
+        std::size_t hashValue = 0;
+        for (uint8_t byte : key)
+        {
+            hashValue ^= std::hash<uint8_t>()(byte) + 0x9e3779b9 + (hashValue << 6) + (hashValue >> 2);
+        }
+        return hashValue;
+    }
+};
+
+struct RouterPeerState
+{
+    asio::ip::udp::endpoint endpoint;
+    bool hasValidEndpoint = false;
+    int activeChannelId = -1;
 };
 
 class Application
@@ -32,13 +57,16 @@ public:
 
     bool initialize(bool isServerMode);
     void runMainLoop(const std::string& targetIp);
+    void runAudioQualityTest(const std::string& inputWavPath, const std::string& outputWavPath);
 
 private:
     void processClientTcpPush(const std::string& payload);
     void serverControlLoop();
-    void serverRouterLoop();
     void clientControlLoop(const std::string& serverIp);
-    void clientAudioLoop(const std::string& serverIp);
+    void clientOutgoingAudioLoop(const std::string& serverIp);
+
+    void onServerUdpPacket(const asio::ip::udp::endpoint& senderEndpoint, const uint8_t* payloadData, size_t payloadSize);
+    void onClientUdpPacket(const asio::ip::udp::endpoint& senderEndpoint, const uint8_t* payloadData, size_t payloadSize);
 
     std::thread m_controlThread;
     std::thread m_routerThread;
@@ -48,6 +76,7 @@ private:
     std::atomic<bool> m_isDeafened{false};
 
     LockFreeQueue<PeerRoutingState, 256> m_routingQueue;
+    std::unordered_map<std::array<uint8_t, uuidLen>, RouterPeerState, UuidHash> m_activeRouters;
 
     std::unique_ptr<INetworkProvider> m_networkProvider;
     NetworkManager m_networkManager;

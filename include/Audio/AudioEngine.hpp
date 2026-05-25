@@ -34,10 +34,15 @@ public:
     void pushIncomingPacket(const std::string& senderUuid, const std::vector<uint8_t>& opusPacket);
     void resetBuffers();
 
+    std::vector<uint8_t> encodePacketDirectly(const std::vector<int16_t>& pcmData);
+    std::vector<int16_t> decodePacketDirectly(const std::vector<uint8_t>& opusData);
+
 private:
     static int routingCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames, double streamTime, RtAudioStreamStatus status, void* userData);
 
     int processHardwareBuffers(int16_t* outputBuffer, const int16_t* inputBuffer, unsigned int nFrames);
+
+    OpusDecoder* m_testDecoder;
 
     RtAudio m_audioSystem;
     OpusEncoder* m_opusEncoder;

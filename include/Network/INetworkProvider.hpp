@@ -20,8 +20,6 @@ public:
     
     virtual bool initialize(bool isServerMode) = 0;
     virtual void sendData(const std::string& targetIp, const std::vector<uint8_t>& dataPayload) = 0;
-    
-    virtual bool receiveData(NetworkPacket& outPacket) = 0;
 
     virtual void sendData(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& dataPayload) = 0;
 
@@ -33,4 +31,7 @@ public:
     virtual void sendPersistentTcp(const std::string& payload) = 0;
     virtual void broadcastTcp(const std::string& payload) = 0;
     virtual void sendTcpTo(const std::string& uuid, const std::string& payload) = 0;
+    virtual void sendDataAsync(const std::string& targetIp, std::shared_ptr<std::vector<uint8_t>> dataPayload) = 0;
+    virtual void sendDataAsync(const asio::ip::udp::endpoint& targetEndpoint, std::shared_ptr<std::vector<uint8_t>> dataPayload) = 0;
+    virtual void setUdpReceiveCallback(std::function<void(const asio::ip::udp::endpoint&, const uint8_t*, size_t)> callback) = 0;
 };

@@ -1,8 +1,10 @@
+// Application.cpp
 #include "Core/Application.hpp"
 #include "Network/INetworkProvider.hpp"
+#include "Utils/WavUtils.hpp"
 #include <spdlog/spdlog.h>
+#include <cstring>
 
-static constexpr size_t uuidLen = 36;
 static constexpr int serverHeartbeatTimeoutMs = 45000;
 static constexpr int heartbeatIntervalMs = serverHeartbeatTimeoutMs - 3750;
 
@@ -72,8 +74,12 @@ void Application::runMainLoop(const std::string& targetIp)
     if (m_isServerMode)
     {
         spdlog::info("Starting Server Engine...");
+        m_networkProvider->setUdpReceiveCallback([this](const auto& endpoint, const auto* data, auto size)
+        {
+            onServerUdpPacket(endpoint, data, size);
+        });
+        
         m_controlThread = std::thread(&Application::serverControlLoop, this);
-        m_routerThread = std::thread(&Application::serverRouterLoop, this);
         
         while (m_isRunning.load(std::memory_order_acquire))
         {
@@ -83,8 +89,13 @@ void Application::runMainLoop(const std::string& targetIp)
     else
     {
         spdlog::info("Starting Client Engine targeting: {}", targetIp);
+        m_networkProvider->setUdpReceiveCallback([this](const auto& endpoint, const auto* data, auto size)
+        {
+            onClientUdpPacket(endpoint, data, size);
+        });
+        
         m_controlThread = std::thread(&Application::clientControlLoop, this, targetIp);
-        m_routerThread = std::thread(&Application::clientAudioLoop, this, targetIp);
+        m_routerThread = std::thread(&Application::clientOutgoingAudioLoop, this, targetIp);
 
         while (m_isRunning.load(std::memory_order_acquire) && !m_windowManager.shouldClose())
         {
@@ -101,6 +112,73 @@ void Application::runMainLoop(const std::string& targetIp)
     if (m_controlThread.joinable()) m_controlThread.join();
     if (m_routerThread.joinable()) m_routerThread.join();
     spdlog::debug("All threads joined gracefully.");
+}
+
+void Application::onServerUdpPacket(const asio::ip::udp::endpoint& senderEndpoint, const uint8_t* payloadData, size_t payloadSize)
+{
+    PeerRoutingState update;
+    while (m_routingQueue.pop(update))
+    {
+        std::array<uint8_t, uuidLen> uuidKey;
+        std::memcpy(uuidKey.data(), update.uuid, uuidLen);
+        
+        if (m_activeRouters.find(uuidKey) == m_activeRouters.end())
+        {
+            m_activeRouters[uuidKey] = {asio::ip::udp::endpoint(), false, update.activeChannelId};
+        }
+        else
+        {
+            m_activeRouters[uuidKey].activeChannelId = update.activeChannelId;
+        }
+    }
+
+    if (payloadSize <= uuidLen)
+    {
+        return;
+    }
+
+    std::array<uint8_t, uuidLen> packetSenderUuid;
+    std::memcpy(packetSenderUuid.data(), payloadData, uuidLen);
+
+    auto senderIterator = m_activeRouters.find(packetSenderUuid);
+    if (senderIterator == m_activeRouters.end())
+    {
+        return;
+    }
+
+    int senderChannel = senderIterator->second.activeChannelId;
+    if (senderChannel == -1)
+    {
+        return;
+    }
+
+    senderIterator->second.endpoint = senderEndpoint;
+    senderIterator->second.hasValidEndpoint = true;
+
+    auto sharedPayload = std::make_shared<std::vector<uint8_t>>(payloadData, payloadData + payloadSize);
+
+    for (const auto& [otherUuid, profile] : m_activeRouters)
+    {
+        if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && profile.hasValidEndpoint)
+        {
+            m_networkProvider->sendDataAsync(profile.endpoint, sharedPayload);
+        }
+    }
+}
+
+void Application::onClientUdpPacket(const asio::ip::udp::endpoint& senderEndpoint, const uint8_t* payloadData, size_t payloadSize)
+{
+    int currentChannel = m_activeVoiceChannelId.load(std::memory_order_acquire);
+    bool isDeafened = m_isDeafened.load(std::memory_order_acquire);
+
+    if (currentChannel != -1 && !isDeafened && payloadSize > uuidLen)
+    {
+        std::string senderUuid(reinterpret_cast<const char*>(payloadData), uuidLen);
+        m_windowManager.markSpeakerActive(senderUuid);
+        
+        std::vector<uint8_t> opusAudioData(payloadData + uuidLen, payloadData + payloadSize);
+        m_audioEngine.pushIncomingPacket(senderUuid, opusAudioData);
+    }
 }
 
 void Application::serverControlLoop()
@@ -293,93 +371,6 @@ void Application::serverControlLoop()
     }
 }
 
-void Application::serverRouterLoop()
-{
-    spdlog::trace("Server audio router loop started");
-
-    struct RouterPeerState
-    {
-        asio::ip::udp::endpoint endpoint;
-        bool hasValidEndpoint = false;
-        int activeChannelId = -1;
-    };
-    
-    std::map<std::string, RouterPeerState> activeRouters;
-
-    while (m_isRunning.load(std::memory_order_acquire))
-    {
-        PeerRoutingState update;
-        while (m_routingQueue.pop(update))
-        {
-            std::string uuidStr(update.uuid, uuidLen);
-            
-            if (activeRouters.find(uuidStr) == activeRouters.end())
-            {
-                activeRouters[uuidStr] = {asio::ip::udp::endpoint(), false, update.activeChannelId};
-            }
-            else
-            {
-                activeRouters[uuidStr].activeChannelId = update.activeChannelId;
-            }
-            spdlog::trace("Router state updated for UUID: {}. Channel: {}", uuidStr, update.activeChannelId);
-        }
-
-        bool packetsDrained = false;
-        NetworkPacket incomingPacket;
-        
-        while (true) 
-        {
-            if (!m_networkManager.receiveAudioPacket(incomingPacket))
-            {
-                break;
-            }
-            
-            if (incomingPacket.payload.empty())
-            {
-                continue;
-            }
-            
-            packetsDrained = true;
-            
-            if (incomingPacket.payload.size() <= uuidLen)
-            {
-                spdlog::trace("Dropped incoming packet: size {} is too small", incomingPacket.payload.size());
-                continue;
-            }
-
-            std::string packetSenderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
-            if (activeRouters.find(packetSenderUuid) == activeRouters.end())
-            {
-                continue;
-            }
-
-            int senderChannel = activeRouters[packetSenderUuid].activeChannelId;
-            if (senderChannel == -1)
-            {
-                continue;
-            }
-
-            // Update the router table with their exact live UDP endpoint
-            activeRouters[packetSenderUuid].endpoint = incomingPacket.senderEndpoint;
-            activeRouters[packetSenderUuid].hasValidEndpoint = true;
-
-            for (const auto& [otherUuid, profile] : activeRouters)
-            {
-                if (otherUuid != packetSenderUuid && profile.activeChannelId == senderChannel && profile.hasValidEndpoint)
-                {
-                    // Calls the new highly-efficient overload
-                    m_networkManager.sendAudioPacket(profile.endpoint, incomingPacket.payload);
-                }
-            }
-        }
-        
-        if (!packetsDrained)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    }
-}
-
 void Application::clientControlLoop(const std::string& serverIp)
 {
     spdlog::trace("Client control loop started");
@@ -496,9 +487,9 @@ void Application::clientControlLoop(const std::string& serverIp)
     }
 }
 
-void Application::clientAudioLoop(const std::string& serverIp)
+void Application::clientOutgoingAudioLoop(const std::string& serverIp)
 {
-    spdlog::trace("Client audio loop started");
+    spdlog::trace("Client outgoing audio loop started");
     std::string localUuid = Utils::getHardwareUUID();
 
     while (m_isRunning.load(std::memory_order_acquire))
@@ -508,30 +499,6 @@ void Application::clientAudioLoop(const std::string& serverIp)
         bool isMuted = m_isMuted.load(std::memory_order_acquire);
 
         bool hasActivity = false;
-        NetworkPacket incomingPacket;
-        while (true)
-        {
-            if(!m_networkManager.receiveAudioPacket(incomingPacket))
-            {
-                break;
-            }
-
-            if (incomingPacket.payload.empty())
-            {
-                break;
-            }
-            
-            hasActivity = true;
-
-            if (currentChannel != -1 && !isDeafened && incomingPacket.payload.size() > uuidLen)
-            {
-                std::string senderUuid(reinterpret_cast<char*>(incomingPacket.payload.data()), uuidLen);
-                m_windowManager.markSpeakerActive(senderUuid);
-                
-                std::vector<uint8_t> opusAudioData(incomingPacket.payload.begin() + uuidLen, incomingPacket.payload.end());
-                m_audioEngine.pushIncomingPacket(senderUuid, opusAudioData);
-            }
-        }
 
         while (true)
         {
@@ -545,9 +512,9 @@ void Application::clientAudioLoop(const std::string& serverIp)
 
             if (currentChannel != -1 && !isMuted && !isDeafened)
             {
-                std::vector<uint8_t> sfuPacket(localUuid.begin(), localUuid.end());
-                sfuPacket.insert(sfuPacket.end(), outgoingAudio.begin(), outgoingAudio.end());
-                m_networkManager.sendAudioPacket(serverIp, sfuPacket);
+                auto sfuPacket = std::make_shared<std::vector<uint8_t>>(localUuid.begin(), localUuid.end());
+                sfuPacket->insert(sfuPacket->end(), outgoingAudio.begin(), outgoingAudio.end());
+                m_networkProvider->sendDataAsync(serverIp, sfuPacket);
             }
         }
 
@@ -640,4 +607,58 @@ void Application::processClientTcpPush(const std::string& payload)
     {
         spdlog::warn("Received unrecognized push payload prefix: {}", payload);
     }
+}
+
+void Application::runAudioQualityTest(const std::string& inputWavPath, const std::string& outputWavPath)
+{
+    spdlog::info("Starting File-Driven Network Loopback Test...");
+    
+    m_networkProvider->initialize(false);
+    m_audioEngine.initialize();
+
+    std::vector<int16_t> inputPcm = WavUtils::readWav(inputWavPath);
+    std::vector<int16_t> outputPcm;
+    
+    std::string localUuid = Utils::getHardwareUUID();
+    int localPort = m_networkProvider->getLocalUdpPort();
+    std::string localhostIp = "127.0.0.1:" + std::to_string(localPort);
+
+    m_networkProvider->setUdpReceiveCallback([this, &outputPcm](const asio::ip::udp::endpoint& endpoint, const uint8_t* data, size_t size)
+    {
+        if (size > uuidLen)
+        {
+            std::string senderUuid(reinterpret_cast<const char*>(data), uuidLen);
+            std::vector<uint8_t> opusData(data + uuidLen, data + size);
+            
+            std::vector<int16_t> decodedPcm = m_audioEngine.decodePacketDirectly(opusData);
+            outputPcm.insert(outputPcm.end(), decodedPcm.begin(), decodedPcm.end());
+        }
+    });
+
+    const size_t frameSize = 960; 
+    
+    for (size_t currentSample = 0; currentSample < inputPcm.size(); currentSample += frameSize)
+    {
+        size_t chunkSize = std::min(frameSize, inputPcm.size() - currentSample);
+        std::vector<int16_t> pcmChunk(inputPcm.begin() + currentSample, inputPcm.begin() + currentSample + chunkSize);
+        
+        if (chunkSize < frameSize)
+        {
+            pcmChunk.resize(frameSize, 0);
+        }
+
+        std::vector<uint8_t> opusPacket = m_audioEngine.encodePacketDirectly(pcmChunk);
+        
+        auto sfuPacket = std::make_shared<std::vector<uint8_t>>(localUuid.begin(), localUuid.end());
+        sfuPacket->insert(sfuPacket->end(), opusPacket.begin(), opusPacket.end());
+        
+        m_networkProvider->sendData(localhostIp, *sfuPacket);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(5)); 
+    }
+
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    WavUtils::writeWav(outputWavPath, outputPcm);
+    spdlog::info("Test complete. Output saved to {}", outputWavPath);
 }

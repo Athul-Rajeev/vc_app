@@ -1,41 +1,32 @@
 #pragma once
 
-#include <iostream>
-#include <cstring>
+/**
+ *
+ * Threading
+ * ─────────
+ *   All setters are thread-safe (they emit Qt queued signals).
+ *   All getters are thread-safe (atomics / mutex-guarded queues).
+ *   render() drives the Qt event loop from your main loop thread.
+ *
+ * Usage
+ * ─────
+ *   WindowManager wm;
+ *   if (!wm.initialize()) return 1;
+ *   while (!wm.shouldClose()) {
+ *       wm.render();
+ *       // tick networking, audio, etc.
+ *   }
+ *   wm.cleanup(); // also called automatically in destructor
+ */
+
 #include <string>
 #include <vector>
-#include <atomic>
-#include <mutex>
-#include <queue>
-#include <chrono>
-#include <map>
+#include <utility>
 #include <memory>
-#include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_opengl3.h>
-#include <GLFW/glfw3.h>
-#include "Utils/Utils.hpp"
-#include "UI/IconsFontAwesome6.hpp"
 
-struct GLFWwindow;
-
-struct VoicePeer
-{
-    std::string username;
-    bool isMuted;
-    bool isDeafened;
-    std::string uuid;
-    int channelId;
-};
-
-struct UiDisplayState
-{
-    std::vector<std::pair<int, std::string>> textChannelsList;
-    std::vector<std::pair<int, std::string>> voiceChannelsList;
-    std::vector<VoicePeer> voicePeers;
-    std::vector<std::string> chatHistory;
-    std::map<std::string, std::chrono::steady_clock::time_point> speakerActivity;
-};
+class QApplication;
+class QQmlApplicationEngine;
+class DiscordBackend;
 
 class WindowManager
 {
@@ -43,53 +34,45 @@ public:
     WindowManager();
     ~WindowManager();
 
-    bool initialize();
-    void render();
-    void cleanup();
-
-    bool isMuted() const;
-    bool isDeafened() const;
+    // ── Lifecycle ──────────────────────────────────────────────
+    bool initialize();    ///< Creates QApplication, QML engine, and window.
+    void render();        ///< Processes Qt events — call in your main loop.
+    void cleanup();       ///< Destroys engine + app. Called by dtor if needed.
     bool shouldClose() const;
-    
-    bool isLoggedIn() const;
-    std::string getUsername() const;
-    int getSelectedTextChannelId() const;
-    int getActiveVoiceChannelId() const;
-    
+
+    // ── State queries (thread-safe) ────────────────────────────
+    bool        isMuted()                  const;
+    bool        isDeafened()               const;
+    bool        isLoggedIn()               const;
+    int         getSelectedTextChannelId() const;
+    int         getActiveVoiceChannelId()  const;
+    std::string getUsername()              const;
+
+    // ── Pending input queues (thread-safe) ─────────────────────
+    std::string getPendingOutgoingMessage();
     std::string getPendingNewTextChannel();
     std::string getPendingNewVoiceChannel();
-    
-    void setChannels(const std::vector<std::pair<int, std::string>>& textChannels, const std::vector<std::pair<int, std::string>>& voiceChannels);
+
+    // ── Thread-safe UI setters ─────────────────────────────────
+    void setChannels(const std::vector<std::pair<int,std::string>>& textChannels,
+                     const std::vector<std::pair<int,std::string>>& voiceChannels);
+
     void appendChatMessage(const std::string& message);
     void setChatHistory(const std::vector<std::string>& messages);
-    std::string getPendingOutgoingMessage();
+
+    /// Each entry: "username:isMuted(0|1):isDeafened(0|1):uuid:channelId"
     void setVoicePeers(const std::vector<std::string>& peerDataList);
+
+    /// Mark UUID as actively speaking; indicator decays after ~300 ms.
     void markSpeakerActive(const std::string& uuid);
 
 private:
-    void setupDarkTheme();
-    void renderLoginModal();
+    int    m_argc;
+    char*  m_argv[2];
+    char   m_argv0[8];
 
-    GLFWwindow* m_window;
-
-    std::unique_ptr<UiDisplayState> m_frontBuffer;
-    std::unique_ptr<UiDisplayState> m_backBuffer;
-    std::mutex m_bufferMutex;
-    std::atomic<bool> m_isBackBufferDirty;
-
-    std::atomic<int> m_selectedTextChannelId;
-    std::atomic<int> m_activeVoiceChannelId;
-    
-    std::atomic<bool> m_isMuted;
-    std::atomic<bool> m_isDeafened;
-    char m_chatInputBuffer[2048];
-    char m_usernameInputBuffer[256];
-    bool m_showSettingsModal;
-    bool m_isLoggedIn;
-    std::string m_username;
-    
-    std::mutex m_inputQueueMutex;
-    std::queue<std::string> m_pendingNewTextChannels;
-    std::queue<std::string> m_pendingNewVoiceChannels;
-    std::queue<std::string> m_outgoingMessages;
+    std::unique_ptr<QApplication>          m_app;
+    std::unique_ptr<QQmlApplicationEngine> m_engine;
+    DiscordBackend*                        m_backend = nullptr; // owned by engine
+    bool                                   m_initialized = false;
 };
