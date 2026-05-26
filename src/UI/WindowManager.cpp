@@ -57,13 +57,6 @@ bool WindowManager::initialize()
     return true;
 }
 
-void WindowManager::render()
-{
-    // Pump the Qt event loop for up to 16 ms (~60 fps equivalent).
-    // This replaces glfwPollEvents() + the ImGui render call.
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
-}
-
 void WindowManager::cleanup()
 {
     if (!m_initialized) return;
@@ -71,15 +64,6 @@ void WindowManager::cleanup()
     m_app.reset();
     m_backend    = nullptr;
     m_initialized = false;
-}
-
-bool WindowManager::shouldClose() const
-{
-    if (!m_initialized || !m_engine) return true;
-    const auto& roots = m_engine->rootObjects();
-    if (roots.isEmpty()) return true;
-    auto* win = qobject_cast<QQuickWindow*>(roots.first());
-    return win ? !win->isVisible() : true;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -171,4 +155,13 @@ void WindowManager::setUiUpdateCallback(std::function<void()> callback)
     {
         m_backend->setNotifyCallback(m_uiCallback);
     }
+}
+
+int WindowManager::exec()
+{
+    if (!m_initialized || !m_app) return -1;
+    
+    // This hands control to Qt. It will block here at 0% CPU 
+    // until the user closes the main window.
+    return m_app->exec(); 
 }

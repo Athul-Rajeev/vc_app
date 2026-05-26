@@ -108,6 +108,9 @@ void AudioEngine::stopStream()
     {
         m_audioSystem.closeStream();
     }
+
+    std::lock_guard<std::mutex> lock(m_audioMutex);
+    m_audioCv.notify_all();
 }
 
 int AudioEngine::routingCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames, double streamTime, RtAudioStreamStatus status, void* userData)

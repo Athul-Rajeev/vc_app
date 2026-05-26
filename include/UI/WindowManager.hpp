@@ -1,24 +1,5 @@
 #pragma once
 
-/**
- *
- * Threading
- * ─────────
- *   All setters are thread-safe (they emit Qt queued signals).
- *   All getters are thread-safe (atomics / mutex-guarded queues).
- *   render() drives the Qt event loop from your main loop thread.
- *
- * Usage
- * ─────
- *   WindowManager wm;
- *   if (!wm.initialize()) return 1;
- *   while (!wm.shouldClose()) {
- *       wm.render();
- *       // tick networking, audio, etc.
- *   }
- *   wm.cleanup(); // also called automatically in destructor
- */
-
 #include <string>
 #include <vector>
 #include <utility>
@@ -37,9 +18,8 @@ public:
 
     // ── Lifecycle ──────────────────────────────────────────────
     bool initialize();    ///< Creates QApplication, QML engine, and window.
-    void render();        ///< Processes Qt events — call in your main loop.
-    void cleanup();       ///< Destroys engine + app. Called by dtor if needed.
-    bool shouldClose() const;
+    void cleanup();       ///< Destroys engine + app. Called by dtor if needed
+    int exec();
 
     // ── State queries (thread-safe) ────────────────────────────
     bool        isMuted()                  const;

@@ -88,33 +88,30 @@ void Application::runMainLoop(const std::string& targetIp)
     }
     else
     {
-        spdlog::info("Starting Client Engine targeting: {}", targetIp);
+spdlog::info("Starting Client Engine targeting: {}", targetIp);
         m_networkProvider->setUdpReceiveCallback([this](const auto& endpoint, const auto* data, auto size)
         {
             onClientUdpPacket(endpoint, data, size);
         });
         
+        //Spawn background threads
         m_controlThread = std::thread(&Application::clientControlLoop, this, targetIp);
         m_routerThread = std::thread(&Application::clientOutgoingAudioLoop, this, targetIp);
 
-        while (m_isRunning.load(std::memory_order_acquire) && !m_windowManager.shouldClose())
-        {
-            auto frameStart = std::chrono::steady_clock::now();
-            
-            m_windowManager.render();
-            
-            auto frameEnd = std::chrono::steady_clock::now();
-            auto frameDuration = std::chrono::duration_cast<std::chrono::milliseconds>(frameEnd - frameStart).count();
-            
-            // If Qt processed events in less than 16ms, sleep the remainder to lock at ~60 FPS
-            if (frameDuration < 16)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(16 - frameDuration));
-            }
-        }
+        //Hand main thread to Qt Native Event Loop
+        // Execution pauses here until the window is closed.
+        m_windowManager.exec();
 
+        //User closed the window, exec() returned. Initiate shutdown.
         spdlog::info("Client window closed, initiating shutdown sequence...");
         m_isRunning.store(false, std::memory_order_release);
+        
+        //Force-wake any sleeping condition variables so threads can exit
+        {
+            std::lock_guard<std::mutex> lock(m_clientMutex);
+            m_clientCv.notify_all(); 
+        }
+        
         m_audioEngine.stopStream();
         m_windowManager.cleanup();
     }
