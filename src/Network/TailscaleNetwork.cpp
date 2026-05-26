@@ -1,70 +1,221 @@
 #include "Network/TailscaleNetwork.hpp"
-
+#include "Network/INetworkProvider.hpp"
+#include <spdlog/spdlog.h>
 
 TailscaleNetwork::TailscaleNetwork()
-    : m_ioContext(), m_udpSocket(m_ioContext), m_tcpAcceptor(m_ioContext), m_isServerMode(false)
+    : m_tcpContext(), 
+      m_udpContext(),
+      m_udpSocket(m_udpContext), 
+      m_tcpAcceptor(m_tcpContext), 
+      m_isServerMode(false)
 {
-    m_port = 50000; 
+    m_port = 50000;
+    m_receiveBuffer.resize(1500);
+    spdlog::trace("TailscaleNetwork instantiated");
 }
 
 TailscaleNetwork::~TailscaleNetwork()
 {
-    if (m_udpSocket.is_open())
+    spdlog::trace("TailscaleNetwork shutting down contexts and joining threads");
+    
+    m_tcpContext.stop();
+    m_udpContext.stop();
+
+    if (m_tcpThread.joinable())
     {
-        m_udpSocket.close();
+        m_tcpThread.join();
     }
-    if (m_tcpAcceptor.is_open())
+    if (m_udpThread.joinable())
     {
-        m_tcpAcceptor.close();
+        m_udpThread.join();
     }
+    
+    spdlog::trace("TailscaleNetwork destroyed");
 }
 
 bool TailscaleNetwork::initialize(bool isServerMode)
 {
     m_isServerMode = isServerMode;
+    spdlog::debug("Initializing TailscaleNetwork in {} mode", m_isServerMode ? "Server" : "Client");
+
     try
     {
-        m_udpSocket.open(asio::ip::udp::v4());
-        
-        // Server gets 50000, Client gets 0 (OS assigned)
+        // 1. Initialize UDP (Data Plane)
         unsigned short udpPortToBind = m_isServerMode ? 50000 : 0;
+        spdlog::debug("Opening UDP socket and binding to port {}", udpPortToBind);
+        
+        m_udpSocket.open(asio::ip::udp::v4());
         asio::ip::udp::endpoint localUdpEndpoint(asio::ip::udp::v4(), udpPortToBind);
         m_udpSocket.bind(localUdpEndpoint);
-        
+
+        // 2. Initialize TCP (Control Plane)
         unsigned short tcpPortToBind = m_isServerMode ? 50001 : 0;
+        spdlog::debug("Opening TCP acceptor and binding to port {}", tcpPortToBind);
+        
         asio::ip::tcp::endpoint tcpEndpoint(asio::ip::tcp::v4(), tcpPortToBind);
         m_tcpAcceptor.open(tcpEndpoint.protocol());
         m_tcpAcceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
         m_tcpAcceptor.bind(tcpEndpoint);
         m_tcpAcceptor.listen();
-        m_tcpAcceptor.non_blocking(true);
+
+        // 3. Setup Work Guards to keep threads alive
+        spdlog::trace("Setting up ASIO work guards");
+        m_tcpWorkGuard = std::make_unique<asio::executor_work_guard<asio::io_context::executor_type>>(asio::make_work_guard(m_tcpContext));
+        m_udpWorkGuard = std::make_unique<asio::executor_work_guard<asio::io_context::executor_type>>(asio::make_work_guard(m_udpContext));
+
+        startUdpReceiveLoop();
+
+        spdlog::trace("Starting dedicated TCP and UDP ASIO threads");
+        m_tcpThread = std::thread([this]() 
+        { 
+            m_tcpContext.run(); 
+        });
         
-        if (m_isServerMode) 
+        m_udpThread = std::thread([this]() 
+        { 
+            m_udpContext.run(); 
+        });
+
+        if (m_isServerMode)
         {
-            std::cout << "TailscaleServer initialized. Bound to UDP 50000, TCP 50001." << std::endl;
-        } 
+            spdlog::info("Server Initialized successfully. UDP: 50000, TCP: 50001.");
+        }
         else
         {
-            std::cout << "TailscaleClient initialized. Bound to TCP " << m_tcpAcceptor.local_endpoint().port() 
-                      << " and UDP " << m_udpSocket.local_endpoint().port() << std::endl;
+            spdlog::debug("Client network initialized successfully.");
         }
 
         return true;
     }
     catch (const std::exception& errorException)
     {
-        std::cerr << "Failed to initialize network sockets: " << errorException.what() << std::endl;
+        spdlog::critical("Failed to initialize network sockets: {}", errorException.what());
         return false;
     }
 }
 
-int TailscaleNetwork::getLocalTcpPort()
+void TailscaleNetwork::setUdpReceiveCallback(std::function<void(const asio::ip::udp::endpoint&, const uint8_t*, size_t)> callback)
 {
-    if (m_tcpAcceptor.is_open())
+    m_udpReceiveCallback = std::move(callback);
+}
+
+void TailscaleNetwork::startUdpReceiveLoop()
+{
+    m_udpSocket.async_receive_from(asio::buffer(m_receiveBuffer), m_remoteEndpoint,
+        [this](const asio::error_code& error, std::size_t bytesTransferred)
+        {
+            if (!error)
+            {
+                if (bytesTransferred > 0 && m_udpReceiveCallback)
+                {
+                    m_udpReceiveCallback(m_remoteEndpoint, m_receiveBuffer.data(), bytesTransferred);
+                }
+                startUdpReceiveLoop();
+            }
+            else
+            {
+                spdlog::error("UDP Async Receive Error: {}", error.message());
+            }
+        });
+}
+
+void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
+{
+    if (!m_tcpAcceptor.is_open())
     {
-        return m_tcpAcceptor.local_endpoint().port();
+        spdlog::warn("Attempted to poll TCP connections but the acceptor is not open");
+        return;
     }
-    return 0;
+
+    spdlog::debug("Starting to poll TCP connections");
+    startTcpAcceptor(requestHandler);
+}
+
+void TailscaleNetwork::startTcpAcceptor(std::function<std::string(const std::string&, const std::string&)> requestHandler)
+{
+    m_tcpAcceptor.async_accept(asio::make_strand(m_tcpContext), [this, requestHandler](const asio::error_code& error, asio::ip::tcp::socket socket)
+    {
+        // Loop the acceptor first to ensure it always restarts
+        auto loopAcceptor = [&]() 
+        { 
+            startTcpAcceptor(requestHandler); 
+        };
+
+        if (error)
+        {
+            spdlog::warn("TCP Async Accept Error: {}. Backing off...", error.message());
+            // Fail-safe: Back off slightly if OS is out of file descriptors
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            loopAcceptor();
+            return;
+        }
+
+        std::string remoteIp = socket.remote_endpoint().address().to_string();
+        spdlog::debug("Accepted new TCP connection from {}", remoteIp);
+
+        auto newSession = std::make_shared<TcpSession>(std::move(socket));
+
+        auto onMessage = [this, requestHandler](std::shared_ptr<TcpSession> activeSession, const std::string& payload)
+        {
+            spdlog::trace("TCP message received from endpoint. Length: {}", payload.length());
+            
+            size_t firstPipe  = payload.find('|');
+            size_t secondPipe = payload.find('|', firstPipe + 1);
+            std::string messageType = payload.substr(0, firstPipe);
+
+            bool hasValidPipes = firstPipe != std::string::npos && secondPipe != std::string::npos;
+            if (hasValidPipes && messageType == "LOGIN")
+            {
+                std::string clientUuid = payload.substr(firstPipe + 1, secondPipe - firstPipe - 1);
+                std::lock_guard<std::mutex> lock(m_sessionMutex);
+
+                // ACTIVE OVERRIDE: Kill the ghost connection if it exists
+                auto existing = m_activeSessions.find(clientUuid);
+                if (existing != m_activeSessions.end())
+                {
+                    spdlog::warn("Ghost connection detected for UUID: {}. Overriding previous session.", clientUuid);
+                    existing->second->closeSession();
+                }
+
+                activeSession->setClientUuid(clientUuid);
+                m_activeSessions[clientUuid] = activeSession;
+                spdlog::info("Client logged in successfully. Tracked UUID: {}", clientUuid);
+            }
+
+            // Pass the payload up to Application.cpp's logic
+            std::string response = requestHandler(activeSession->getRemoteEndpoint(), payload);
+            if (!response.empty())
+            {
+                spdlog::trace("Sending TCP response back to {}", activeSession->getRemoteEndpoint());
+                activeSession->sendData(response);
+            }
+        };
+
+        auto onDisconnect = [this](std::shared_ptr<TcpSession> disconnectedSession)
+        {
+            // Clean up map on disconnect or timeout
+            std::lock_guard<std::mutex> lock(m_sessionMutex);
+            std::string clientUuid = disconnectedSession->getClientUuid();
+
+            spdlog::debug("TCP disconnect event triggered for UUID: '{}'", clientUuid);
+
+            bool isTracked = !clientUuid.empty()
+                          && m_activeSessions.count(clientUuid)
+                          && m_activeSessions[clientUuid] == disconnectedSession;
+
+            if (!isTracked)
+            {
+                spdlog::trace("Untracked or already purged session disconnected.");
+                return;
+            }
+            
+            m_activeSessions.erase(clientUuid);
+            spdlog::info("Session purged for UUID: {}", clientUuid);
+        };
+
+        newSession->start(onMessage, onDisconnect);
+        loopAcceptor();
+    });
 }
 
 int TailscaleNetwork::getLocalUdpPort()
@@ -73,6 +224,8 @@ int TailscaleNetwork::getLocalUdpPort()
     {
         return m_udpSocket.local_endpoint().port();
     }
+    
+    spdlog::warn("getLocalUdpPort called but socket is not open, returning 0");
     return 0;
 }
 
@@ -80,60 +233,132 @@ void TailscaleNetwork::sendData(const std::string& targetIp, const std::vector<u
 {
     try
     {
-        asio::ip::udp::resolver resolver(m_ioContext);
+        asio::ip::udp::endpoint targetEndpoint;
         
-        std::string ip = targetIp;
-        std::string port = std::to_string(m_port);
-        
-        size_t colonPos = targetIp.find(':');
-        if (colonPos != std::string::npos) 
         {
-            ip = targetIp.substr(0, colonPos);
-            port = targetIp.substr(colonPos + 1);
+            std::shared_lock<std::shared_mutex> readLock(m_endpointCacheMutex);
+            auto mapIterator = m_endpointCache.find(targetIp);
+            
+            if (mapIterator != m_endpointCache.end())
+            {
+                targetEndpoint = mapIterator->second;
+            }
+            else
+            {
+                readLock.unlock();
+                std::unique_lock<std::shared_mutex> writeLock(m_endpointCacheMutex);
+                
+                mapIterator = m_endpointCache.find(targetIp);
+                if (mapIterator != m_endpointCache.end())
+                {
+                    targetEndpoint = mapIterator->second;
+                }
+                else
+                {
+                    asio::ip::udp::resolver resolver(m_udpContext);
+                    std::string ip = targetIp;
+                    std::string port = std::to_string(m_port);
+                    
+                    size_t colonPos = targetIp.find(':');
+                    if (colonPos != std::string::npos) 
+                    {
+                        ip = targetIp.substr(0, colonPos);
+                        port = targetIp.substr(colonPos + 1);
+                    }
+
+                    spdlog::info("Resolving and caching new UDP endpoint: {}:{}", ip, port);
+                    auto endpoints = resolver.resolve(asio::ip::udp::v4(), ip, port);
+                    targetEndpoint = *endpoints.begin();
+                    
+                    m_endpointCache[targetIp] = targetEndpoint;
+                }
+            }
         }
 
-        asio::ip::udp::resolver::results_type endpoints = resolver.resolve(asio::ip::udp::v4(), ip, port);
-        m_udpSocket.send_to(asio::buffer(dataPayload), *endpoints.begin());
+        m_udpSocket.send_to(asio::buffer(dataPayload), targetEndpoint);
     }
     catch (const std::exception& errorException)
     {
+        spdlog::debug("Exception caught while attempting to send UDP data to {}: {}", targetIp, errorException.what());
     }
 }
 
-NetworkPacket TailscaleNetwork::receiveData()
+void TailscaleNetwork::sendData(const asio::ip::udp::endpoint& targetEndpoint, const std::vector<uint8_t>& dataPayload)
 {
-    std::vector<uint8_t> bufferData(1500); 
-    asio::ip::udp::endpoint senderEndpoint;
-    
     try
     {
-        if (m_udpSocket.available() > 0)
-        {
-            size_t bytesReceived = m_udpSocket.receive_from(asio::buffer(bufferData), senderEndpoint);
-            bufferData.resize(bytesReceived);
-            
-            NetworkPacket pack;
-            pack.senderIp = senderEndpoint.address().to_string() + ":" + std::to_string(senderEndpoint.port());
-            pack.payload = std::move(bufferData);
-            return pack;
-        }
+        m_udpSocket.send_to(asio::buffer(dataPayload), targetEndpoint);
     }
     catch (const std::exception& errorException)
     {
-        std::cerr << "Error receiving packet: " << errorException.what() << std::endl;
+        spdlog::debug("Exception caught while sending raw UDP packet: {}", errorException.what());
     }
-    
-    return NetworkPacket{"", std::vector<uint8_t>()}; 
 }
 
-std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, const std::string& payload)
+void TailscaleNetwork::sendDataAsync(const asio::ip::udp::endpoint& targetEndpoint, std::shared_ptr<std::vector<uint8_t>> dataPayload)
 {
-    try 
+    m_udpSocket.async_send_to(asio::buffer(*dataPayload), targetEndpoint,
+        [dataPayload](const asio::error_code& error, std::size_t /*bytesTransferred*/)
+        {
+            if (error)
+            {
+                spdlog::trace("UDP Async Send Error: {}", error.message());
+            }
+        });
+}
+
+void TailscaleNetwork::sendDataAsync(const std::string& targetIp, std::shared_ptr<std::vector<uint8_t>> dataPayload)
+{
+    asio::ip::udp::endpoint targetEndpoint;
+    
     {
-        // Use a localized context so we can cleanly control the run loop and timeouts
-        asio::io_context localIoContext;
-        asio::ip::tcp::socket socket(localIoContext);
-        asio::ip::tcp::resolver resolver(localIoContext);
+        std::shared_lock<std::shared_mutex> readLock(m_endpointCacheMutex);
+        auto mapIterator = m_endpointCache.find(targetIp);
+        
+        if (mapIterator != m_endpointCache.end())
+        {
+            targetEndpoint = mapIterator->second;
+        }
+        else
+        {
+            readLock.unlock();
+            std::unique_lock<std::shared_mutex> writeLock(m_endpointCacheMutex);
+            
+            mapIterator = m_endpointCache.find(targetIp);
+            if (mapIterator != m_endpointCache.end())
+            {
+                targetEndpoint = mapIterator->second;
+            }
+            else
+            {
+                asio::ip::udp::resolver resolver(m_udpContext);
+                std::string ip = targetIp;
+                std::string port = std::to_string(m_port);
+                
+                size_t colonPos = targetIp.find(':');
+                if (colonPos != std::string::npos) 
+                {
+                    ip = targetIp.substr(0, colonPos);
+                    port = targetIp.substr(colonPos + 1);
+                }
+
+                auto endpoints = resolver.resolve(asio::ip::udp::v4(), ip, port);
+                targetEndpoint = *endpoints.begin();
+                
+                m_endpointCache[targetIp] = targetEndpoint;
+            }
+        }
+    }
+
+    sendDataAsync(targetEndpoint, std::move(dataPayload));
+}
+
+bool TailscaleNetwork::connectPersistentTcp(const std::string& targetIp, std::function<void(const std::string&)> onMessage)
+{
+    try
+    {
+        spdlog::debug("Attempting to establish persistent TCP connection to {}", targetIp);
+        asio::ip::tcp::resolver resolver(m_tcpContext);
         
         std::string ip = targetIp;
         std::string port = "50001"; 
@@ -145,168 +370,73 @@ std::string TailscaleNetwork::sendSynchronousTcp(const std::string& targetIp, co
             port = targetIp.substr(colonPos + 1);
         }
 
-        asio::ip::tcp::resolver::results_type endpoints = resolver.resolve(ip, port);
+        spdlog::trace("Resolving persistent TCP target {}:{}", ip, port);
+        auto endpoints = resolver.resolve(ip, port);
+        asio::ip::tcp::socket socket(m_tcpContext);
         
-        asio::error_code operationError;
-        asio::steady_timer timeoutTimer(localIoContext);
-
-        // 1. Connect with timeout
-        timeoutTimer.expires_after(std::chrono::milliseconds(2000));
-        timeoutTimer.async_wait([&socket](const asio::error_code& ec)
-        {
-            if (!ec)
+        // Synchronous connect just for the initial handshake, then we hand it to the async session
+        asio::connect(socket, endpoints);
+        spdlog::info("Successfully connected to persistent TCP endpoint {}:{}", ip, port);
+        
+        m_clientSession = std::make_shared<TcpSession>(std::move(socket));
+        m_clientSession->start(
+            [onMessage](std::shared_ptr<TcpSession>, const std::string& payload)
             {
-                asio::error_code ignoreError;
-                socket.close(ignoreError);
-            }
-        });
-        
-        asio::async_connect(socket, endpoints, [&](const asio::error_code& ec, const asio::ip::tcp::endpoint&)
-        {
-            operationError = ec;
-            timeoutTimer.cancel();
-        });
-        
-        localIoContext.run();
-
-        if (operationError || !socket.is_open())
-        {
-            return "";
-        }
-
-        // 2. Write with timeout
-        localIoContext.restart();
-        timeoutTimer.expires_after(std::chrono::milliseconds(2000));
-        timeoutTimer.async_wait([&socket](const asio::error_code& ec)
-        {
-            if (!ec)
+                spdlog::trace("Received payload on persistent TCP connection. Length: {}", payload.length());
+                onMessage(payload);
+            },
+            [](std::shared_ptr<TcpSession>)
             {
-                asio::error_code ignoreError;
-                socket.close(ignoreError);
-            }
-        });
-        
-        asio::async_write(socket, asio::buffer(payload), [&](const asio::error_code& ec, std::size_t)
-        {
-            operationError = ec;
-            timeoutTimer.cancel();
-        });
-        
-        localIoContext.run();
-
-        if (operationError)
-        {
-            return "";
-        }
-
-        // 3. Read with timeout
-        localIoContext.restart();
-        timeoutTimer.expires_after(std::chrono::milliseconds(2000));
-        timeoutTimer.async_wait([&socket](const asio::error_code& ec)
-        {
-            if (!ec)
-            {
-                asio::error_code ignoreError;
-                socket.close(ignoreError);
-            }
-        });
-        
-        char responseBuffer[8192] = {0};
-        size_t length = 0;
-        socket.async_read_some(asio::buffer(responseBuffer), [&](const asio::error_code& ec, std::size_t bytesRead)
-        {
-            operationError = ec;
-            length = bytesRead;
-            timeoutTimer.cancel();
-        });
-        
-        localIoContext.run();
-
-        asio::error_code shutdownError;
-        socket.shutdown(asio::ip::tcp::socket::shutdown_both, shutdownError);
-        socket.close(shutdownError);
-        
-        if (!operationError || operationError == asio::error::eof) 
-        {
-            return std::string(responseBuffer, length);
-        }
-    } 
-    catch (const std::exception& networkException) 
-    {
-        std::cerr << "TCP Sync Error: " << networkException.what() << std::endl;
-    }
-    
-    return "";
-}
-
-void TailscaleNetwork::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
-{
-    if (!m_tcpAcceptor.is_open())
-    {
-        return;
-    }
-    
-    try 
-    {
-        asio::error_code ec;
-        asio::ip::tcp::socket socket(m_ioContext);
-        m_tcpAcceptor.accept(socket, ec);
-        
-        if (!ec) 
-        {
-            char data[4096];
-            size_t length = socket.read_some(asio::buffer(data), ec);
-            std::string incomingIp = socket.remote_endpoint().address().to_string();
+                spdlog::info("Persistent TCP connection disconnected from server.");
+            });
             
-            if (!ec || ec == asio::error::eof) 
-            {
-                std::string request(data, length);
-                std::string response = requestHandler(incomingIp, request);
-                
-                if (!response.empty()) 
-                {
-                    asio::write(socket, asio::buffer(response));
-                }
-            }
-            socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-            socket.close();
-        }
-    } 
-    catch (...) 
+        return true;
+    }
+    catch (const std::exception& errorException)
     {
+        spdlog::error("Failed to connect persistent TCP to {}: {}", targetIp, errorException.what());
+        return false;
     }
 }
 
-void TailscaleNetwork::waitForEvents(int timeoutMs)
+void TailscaleNetwork::sendPersistentTcp(const std::string& payload)
 {
-    if (m_udpSocket.is_open())
+    if (m_clientSession)
     {
-        m_udpSocket.async_wait(asio::socket_base::wait_read, [](const asio::error_code& ec)
-        {
-        });
+        spdlog::trace("Sending {} bytes via persistent TCP connection", payload.length());
+        m_clientSession->sendData(payload);
     }
-
-    if (m_tcpAcceptor.is_open())
+    else
     {
-        m_tcpAcceptor.async_wait(asio::socket_base::wait_read, [](const asio::error_code& ec)
-        {
-        });
+        spdlog::warn("Attempted to send persistent TCP data, but no active client session exists");
     }
+}
 
-    // Run the IO context. It will yield to the OS and block until either
-    // a socket becomes readable, or the timeout expires.
-    m_ioContext.restart();
-    m_ioContext.run_for(std::chrono::milliseconds(timeoutMs));
-
-    // Cancel pending waits so they do not conflict with the next manual poll.
-    asio::error_code ec;
-    if (m_udpSocket.is_open())
-    {
-        m_udpSocket.cancel(ec);
-    }
+void TailscaleNetwork::broadcastTcp(const std::string& payload)
+{
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
     
-    if (m_tcpAcceptor.is_open())
+    spdlog::debug("Broadcasting TCP message to {} active sessions", m_activeSessions.size());
+    
+    for (const auto& [uuid, session] : m_activeSessions)
     {
-        m_tcpAcceptor.cancel(ec);
+        spdlog::trace("Broadcasting payload to UUID: {}", uuid);
+        session->sendData(payload);
+    }
+}
+
+void TailscaleNetwork::sendTcpTo(const std::string& uuid, const std::string& payload)
+{
+    std::lock_guard<std::mutex> lock(m_sessionMutex);
+    auto iterator = m_activeSessions.find(uuid);
+    
+    if (iterator != m_activeSessions.end())
+    {
+        spdlog::trace("Sending targeted TCP message to UUID: {}", uuid);
+        iterator->second->sendData(payload);
+    }
+    else
+    {
+        spdlog::warn("Attempted to send targeted TCP message to unknown UUID: {}", uuid);
     }
 }

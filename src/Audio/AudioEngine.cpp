@@ -7,6 +7,7 @@ AudioEngine::AudioEngine()
     m_audioChannelCount = 1;
     m_frameSize = 960; 
     m_opusEncoder = nullptr;
+    m_testDecoder = nullptr;
     m_vadHoldFrames = 0;
     
     m_sequenceCounter.store(1, std::memory_order_relaxed);
@@ -20,6 +21,11 @@ AudioEngine::~AudioEngine()
     {
         opus_encoder_destroy(m_opusEncoder);
     }
+    
+    if (m_testDecoder != nullptr)
+    {
+        opus_decoder_destroy(m_testDecoder);
+    }
 }
 
 bool AudioEngine::initialize()
@@ -30,6 +36,14 @@ bool AudioEngine::initialize()
     if (opusError != OPUS_OK)
     {
         std::cerr << "Failed to create Opus encoder." << std::endl;
+        return false;
+    }
+
+    int decoderError = OPUS_OK;
+    m_testDecoder = opus_decoder_create(m_sampleRate, m_audioChannelCount, &decoderError);
+    if (decoderError != OPUS_OK)
+    {
+        std::cerr << "Failed to create Opus test decoder." << std::endl;
         return false;
     }
 
@@ -94,6 +108,9 @@ void AudioEngine::stopStream()
     {
         m_audioSystem.closeStream();
     }
+
+    std::lock_guard<std::mutex> lock(m_audioMutex);
+    m_audioCv.notify_all();
 }
 
 int AudioEngine::routingCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames, double streamTime, RtAudioStreamStatus status, void* userData)
@@ -138,6 +155,7 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
             {
                 packet.size = 12 + bytesEncoded;
                 m_outgoingPackets.forcePush(packet);
+                m_audioCv.notify_one();
             }
         }
     }
@@ -188,4 +206,56 @@ void AudioEngine::resetBuffers()
     
     m_sequenceCounter.store(1, std::memory_order_release);
     m_vadHoldFrames = 0;
+}
+
+std::vector<uint8_t> AudioEngine::encodePacketDirectly(const std::vector<int16_t>& pcmData)
+{
+    std::vector<uint8_t> encodedData(MaxAudioPacketSize);
+    int bytesEncoded = opus_encode(m_opusEncoder, pcmData.data(), m_frameSize, encodedData.data(), MaxAudioPacketSize);
+
+    if (bytesEncoded > 0)
+    {
+        encodedData.resize(bytesEncoded);
+        return encodedData;
+    }
+
+    return std::vector<uint8_t>();
+}
+
+std::vector<int16_t> AudioEngine::decodePacketDirectly(const std::vector<uint8_t>& opusData)
+{
+    std::vector<int16_t> decodedPcm(m_frameSize * m_audioChannelCount);
+    int samplesDecoded = opus_decode(m_testDecoder, opusData.data(), opusData.size(), decodedPcm.data(), m_frameSize, 0);
+
+    if (samplesDecoded > 0)
+    {
+        decodedPcm.resize(samplesDecoded * m_audioChannelCount);
+        return decodedPcm;
+    }
+
+    return std::vector<int16_t>();
+}
+
+std::vector<uint8_t> AudioEngine::waitForOutgoingPacket(int timeoutMs)
+{
+    std::vector<uint8_t> packetData;
+    AudioPacket internalPacket;
+
+    // Try to pop immediately without locking
+    if (m_outgoingPackets.pop(internalPacket))
+    {
+        packetData.assign(internalPacket.data, internalPacket.data + internalPacket.size);
+        return packetData;
+    }
+
+    // Sleep until the hardware callback signals us, or timeout occurs
+    std::unique_lock<std::mutex> lock(m_audioMutex);
+    m_audioCv.wait_for(lock, std::chrono::milliseconds(timeoutMs));
+
+    if (m_outgoingPackets.pop(internalPacket))
+    {
+        packetData.assign(internalPacket.data, internalPacket.data + internalPacket.size);
+    }
+
+    return packetData;
 }

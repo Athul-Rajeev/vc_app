@@ -1,76 +1,73 @@
 #include "Network/NetworkManager.hpp"
+#include <spdlog/spdlog.h>
 
-NetworkManager::NetworkManager()
+void NetworkManager::setProvider(INetworkProvider* provider)
 {
-    m_activeProvider = nullptr;
+    m_provider = provider;
 }
 
-NetworkManager::~NetworkManager()
+void NetworkManager::sendAudioPacket(const std::string& targetIp, std::shared_ptr<std::vector<uint8_t>> payload)
 {
-}
-
-void NetworkManager::setProvider(INetworkProvider* networkProvider)
-{
-    m_activeProvider = networkProvider;
-}
-
-void NetworkManager::sendAudioPacket(const std::string& targetIp, const std::vector<uint8_t>& packetData)
-{
-    if (m_activeProvider != nullptr && !packetData.empty())
+    if (m_provider)
     {
-        m_activeProvider->sendData(targetIp, packetData);
+        m_provider->sendDataAsync(targetIp, payload);
     }
 }
 
-NetworkPacket NetworkManager::receiveAudioPacket()
+void NetworkManager::sendAudioPacket(const asio::ip::udp::endpoint& targetEndpoint, std::shared_ptr<std::vector<uint8_t>> payload)
 {
-    if (m_activeProvider != nullptr)
+    if (m_provider)
     {
-        return m_activeProvider->receiveData();
-    }
-    
-    return NetworkPacket{"", std::vector<uint8_t>()};
-}
-
-std::string NetworkManager::sendSynchronousTcp(const std::string& targetIp, const std::string& payload)
-{
-    if (m_activeProvider != nullptr)
-    {
-        return m_activeProvider->sendSynchronousTcp(targetIp, payload);
-    }
-    return "";
-}
-
-void NetworkManager::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> requestHandler)
-{
-    if (m_activeProvider != nullptr)
-    {
-        m_activeProvider->pollTcpConnections(requestHandler);
+        m_provider->sendDataAsync(targetEndpoint, payload);
     }
 }
 
-void NetworkManager::waitForEvents(int timeoutMs)
+void NetworkManager::pollTcpConnections(std::function<std::string(const std::string&, const std::string&)> handler)
 {
-    if (m_activeProvider != nullptr)
+    if (m_provider)
     {
-        m_activeProvider->waitForEvents(timeoutMs);
+        m_provider->pollTcpConnections(handler);
     }
-}
-
-int NetworkManager::getLocalTcpPort()
-{
-    if (m_activeProvider != nullptr)
-    {
-        return m_activeProvider->getLocalTcpPort();
-    }
-    return 0;
 }
 
 int NetworkManager::getLocalUdpPort()
 {
-    if (m_activeProvider != nullptr)
+    if (m_provider)
     {
-        return m_activeProvider->getLocalUdpPort();
+        return m_provider->getLocalUdpPort();
     }
     return 0;
+}
+
+bool NetworkManager::connectPersistentTcp(const std::string& targetIp, std::function<void(const std::string&)> onMessage)
+{
+    if (m_provider)
+    {
+        return m_provider->connectPersistentTcp(targetIp, onMessage);
+    }
+    return false;
+}
+
+void NetworkManager::sendPersistentTcp(const std::string& payload)
+{
+    if (m_provider)
+    {
+        m_provider->sendPersistentTcp(payload);
+    }
+}
+
+void NetworkManager::broadcastTcp(const std::string& payload)
+{
+    if (m_provider)
+    {
+        m_provider->broadcastTcp(payload);
+    }
+}
+
+void NetworkManager::sendTcpTo(const std::string& uuid, const std::string& payload)
+{
+    if (m_provider)
+    {
+        m_provider->sendTcpTo(uuid, payload);
+    }
 }

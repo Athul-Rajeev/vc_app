@@ -2,6 +2,7 @@
 #include <string>
 #include <fstream>
 #include <random>
+#include <cinttypes>
 
 namespace Utils
 {
@@ -16,12 +17,14 @@ inline std::string generateRandomUUID()
     uint64_t secondHalf = distribution(randomEngine);
 
     char uuidBuffer[37];
-    snprintf(uuidBuffer, sizeof(uuidBuffer), "%08lx-%04lx-%04lx-%04lx-%012lx",
-             (firstHalf >> 32),
-             (firstHalf >> 16) & 0xFFFF,
-             firstHalf & 0xFFFF,
-             (secondHalf >> 48) & 0xFFFF,
-             secondHalf & 0xFFFFFFFFFFFF);
+    snprintf(uuidBuffer, sizeof(uuidBuffer), 
+         "%08" PRIx64 "-%04" PRIx64 "-%04" PRIx64 "-%04" PRIx64 "-%012" PRIx64, 
+         (firstHalf >> 32), 
+         (firstHalf >> 16) & 0xFFFF, 
+         firstHalf & 0xFFFF, 
+         (secondHalf >> 48) & 0xFFFF, 
+         secondHalf & 0xFFFFFFFFFFFF);
+
     return std::string(uuidBuffer);
 }
 
