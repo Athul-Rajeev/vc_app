@@ -7,6 +7,8 @@
 #include <opus.h>
 #include <cmath>
 #include <iostream>
+#include <mutex>
+#include <condition_variable>
 
 #include "Utils/LockFreeQueue.hpp"
 #include "Audio/PeerMixer.hpp"
@@ -31,6 +33,7 @@ public:
     void stopStream();
 
     std::vector<uint8_t> getOutgoingPacket();
+    std::vector<uint8_t> waitForOutgoingPacket(int timeoutMs);
     void pushIncomingPacket(const std::string& senderUuid, const std::vector<uint8_t>& opusPacket);
     void resetBuffers();
 
@@ -56,4 +59,7 @@ private:
     
     std::atomic<uint32_t> m_sequenceCounter;
     int m_vadHoldFrames;
+
+    std::mutex m_audioMutex;
+    std::condition_variable m_audioCv;
 };

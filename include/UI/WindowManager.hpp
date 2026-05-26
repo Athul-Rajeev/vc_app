@@ -23,6 +23,7 @@
 #include <vector>
 #include <utility>
 #include <memory>
+#include <functional>
 
 class QApplication;
 class QQmlApplicationEngine;
@@ -66,6 +67,8 @@ public:
     /// Mark UUID as actively speaking; indicator decays after ~300 ms.
     void markSpeakerActive(const std::string& uuid);
 
+    void setUiUpdateCallback(std::function<void()> callback);
+
 private:
     int    m_argc;
     char*  m_argv[2];
@@ -75,4 +78,6 @@ private:
     std::unique_ptr<QQmlApplicationEngine> m_engine;
     DiscordBackend*                        m_backend = nullptr; // owned by engine
     bool                                   m_initialized = false;
+
+    std::function<void()> m_uiCallback;
 };

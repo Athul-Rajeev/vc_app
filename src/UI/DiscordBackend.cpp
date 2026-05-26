@@ -57,13 +57,17 @@ void DiscordBackend::login(const QString& user)
     saveUsername(m_username);
     emit usernameChanged();
     emit isLoggedInChanged();
+    notifyUiChanged();
 }
 
 void DiscordBackend::sendMessage(const QString& text)
 {
     if (text.trimmed().isEmpty()) return;
-    QMutexLocker lock(&m_queueMutex);
-    m_pendingMessages.enqueue(text.trimmed());
+    {
+        QMutexLocker lock(&m_queueMutex);
+        m_pendingMessages.enqueue(text.trimmed());
+    }
+    notifyUiChanged();
 }
 
 void DiscordBackend::toggleMute()
@@ -71,6 +75,7 @@ void DiscordBackend::toggleMute()
     bool now = !m_isMuted.load();
     m_isMuted.store(now);
     emit isMutedChanged();
+    notifyUiChanged();
 }
 
 void DiscordBackend::toggleDeafen()
@@ -80,6 +85,7 @@ void DiscordBackend::toggleDeafen()
     m_isMuted.store(now);
     emit isDeafenedChanged();
     emit isMutedChanged();
+    notifyUiChanged();
 }
 
 void DiscordBackend::joinVoiceChannel(int channelId)
@@ -87,6 +93,7 @@ void DiscordBackend::joinVoiceChannel(int channelId)
     m_activeVoiceChannelId.store(channelId);
     emit activeVoiceChannelIdChanged();
     rebuildVoiceChannelsWithPeers();
+    notifyUiChanged();
 }
 
 void DiscordBackend::leaveVoiceChannel()
@@ -94,26 +101,42 @@ void DiscordBackend::leaveVoiceChannel()
     m_activeVoiceChannelId.store(-1);
     emit activeVoiceChannelIdChanged();
     rebuildVoiceChannelsWithPeers();
+    notifyUiChanged();
 }
 
 void DiscordBackend::selectTextChannel(int channelId)
 {
     m_selectedTextChannelId.store(channelId);
     emit selectedTextChannelIdChanged();
+    notifyUiChanged();
 }
 
 void DiscordBackend::requestNewTextChannel(const QString& name)
 {
-    if (name.trimmed().isEmpty()) return;
-    QMutexLocker lock(&m_queueMutex);
-    m_pendingTextChannels.enqueue(name.trimmed().toLower().replace(' ', '-'));
+    if (name.trimmed().isEmpty())
+    {
+        return;
+    }
+
+    {
+        QMutexLocker lock(&m_queueMutex);
+        m_pendingTextChannels.enqueue(name.trimmed().toLower().replace(' ', '-'));
+    }
+    notifyUiChanged();
 }
 
 void DiscordBackend::requestNewVoiceChannel(const QString& name)
 {
-    if (name.trimmed().isEmpty()) return;
-    QMutexLocker lock(&m_queueMutex);
-    m_pendingVoiceChannels.enqueue(name.trimmed());
+    if (name.trimmed().isEmpty()) 
+    {
+        return;
+    }
+    
+    {
+        QMutexLocker lock(&m_queueMutex);
+        m_pendingVoiceChannels.enqueue(name.trimmed());
+    }
+    notifyUiChanged();
 }
 
 QString DiscordBackend::avatarColor(const QString& name) const
@@ -354,4 +377,17 @@ void DiscordBackend::saveUsername(const QString& user)
     QFile f(path);
     if (f.open(QIODevice::WriteOnly | QIODevice::Text))
         QTextStream(&f) << user;
+}
+
+void DiscordBackend::setNotifyCallback(std::function<void()> cb)
+{
+    m_uiCallback = std::move(cb);
+}
+
+void DiscordBackend::notifyUiChanged()
+{
+    if (m_uiCallback)
+    {
+        m_uiCallback();
+    }
 }

@@ -162,3 +162,13 @@ void WindowManager::markSpeakerActive(const std::string& uuid)
 {
     if (m_backend) m_backend->markSpeakerActive(uuid);
 }
+
+void WindowManager::setUiUpdateCallback(std::function<void()> callback)
+{
+    m_uiCallback = std::move(callback);
+    
+    if (m_backend)
+    {
+        m_backend->setNotifyCallback(m_uiCallback);
+    }
+}

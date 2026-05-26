@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <functional>
 
 /**
  * DiscordBackend
@@ -29,6 +30,9 @@
  */
 class DiscordBackend : public QObject
 {
+    std::function<void()> m_uiCallback;
+    void notifyUiChanged();
+
     Q_OBJECT
 
     Q_PROPERTY(QString  username             READ username             NOTIFY usernameChanged)
@@ -76,6 +80,7 @@ public:
     void setChatHistory(const std::vector<std::string>& messages);
     void setVoicePeers(const std::vector<std::string>& peerDataList);
     void markSpeakerActive(const std::string& uuid);
+    void setNotifyCallback(std::function<void()> cb);
 
     // ── Output queues (call from any thread) ───────────────────
     std::string dequeuePendingMessage();

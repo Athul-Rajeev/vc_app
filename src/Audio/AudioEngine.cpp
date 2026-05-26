@@ -152,6 +152,7 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
             {
                 packet.size = 12 + bytesEncoded;
                 m_outgoingPackets.forcePush(packet);
+                m_audioCv.notify_one();
             }
         }
     }
@@ -230,4 +231,28 @@ std::vector<int16_t> AudioEngine::decodePacketDirectly(const std::vector<uint8_t
     }
 
     return std::vector<int16_t>();
+}
+
+std::vector<uint8_t> AudioEngine::waitForOutgoingPacket(int timeoutMs)
+{
+    std::vector<uint8_t> packetData;
+    AudioPacket internalPacket;
+
+    // Try to pop immediately without locking
+    if (m_outgoingPackets.pop(internalPacket))
+    {
+        packetData.assign(internalPacket.data, internalPacket.data + internalPacket.size);
+        return packetData;
+    }
+
+    // Sleep until the hardware callback signals us, or timeout occurs
+    std::unique_lock<std::mutex> lock(m_audioMutex);
+    m_audioCv.wait_for(lock, std::chrono::milliseconds(timeoutMs));
+
+    if (m_outgoingPackets.pop(internalPacket))
+    {
+        packetData.assign(internalPacket.data, internalPacket.data + internalPacket.size);
+    }
+
+    return packetData;
 }
