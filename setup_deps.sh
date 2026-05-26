@@ -3,39 +3,16 @@ set -e
 echo "Setting up third-party dependencies..."
 
 # --------------------------------------------------------------
-# Qt6 via apt (covers Ubuntu 22.04+ and Debian 12+)
-# On older distros that don't have qt6 packages, the aqtinstall
-# fallback block below will run instead.
+# Qt6 via aqtinstall (Matches Windows path)
 # --------------------------------------------------------------
 echo "Checking for Qt6..."
-
-QT_APT_PACKAGES=(
-    qt6-base-dev
-    qt6-declarative-dev
-    libqt6qml6
-    qml6-module-qtquick
-    qml6-module-qtquick-controls
-    qml6-module-qtquick-layouts
-    qml6-module-qtquick-templates
-    qt6-qmake
-)
-
-# Check if qt6-base-dev is available in the package manager
-if apt-cache show qt6-base-dev &>/dev/null; then
-    echo "Installing Qt6 via apt..."
-    sudo apt-get update -qq
-    sudo apt-get install -y "${QT_APT_PACKAGES[@]}"
+if [ ! -d "third_party/Qt/6.7.0/gcc_64/lib/cmake/Qt6" ]; then
+    echo "Downloading Qt6 via aqtinstall..."
+    pip3 install aqtinstall --quiet
+    python3 -m aqt install-qt linux desktop 6.7.0 linux_gcc_64 \
+        --outputdir third_party/Qt
 else
-    # Fallback: aqtinstall into third_party/Qt (same as Windows path)
-    echo "qt6-base-dev not found in apt — falling back to aqtinstall..."
-    if [ ! -d "third_party/Qt/6.7.0/gcc_64/lib/cmake/Qt6" ]; then
-        pip3 install aqtinstall --quiet
-        python3 -m aqt install-qt linux desktop 6.7.0 linux_gcc_64 \
-            --outputdir third_party/Qt \
-            --modules qtquickcontrols2
-    else
-        echo "Qt6 (aqt) already exists. Skipping."
-    fi
+    echo "Qt6 (aqt) already exists. Skipping."
 fi
 
 mkdir -p third_party
