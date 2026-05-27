@@ -31,6 +31,14 @@ struct Channel
     std::string name;
 };
 
+struct AccountInfo
+{
+    std::string accountUuid;
+    std::string username;
+    std::string passwordHash;
+    std::string passwordSalt;
+};
+
 class DatabaseManager
 {
 public:
@@ -45,6 +53,12 @@ public:
     std::vector<Channel> fetchVoiceChannels();
     int addTextChannel(const std::string& name);
     int addVoiceChannel(const std::string& name);
+
+    bool createAccount(const std::string& accountUuid, const std::string& username, const std::string& passwordHash, const std::string& passwordSalt);
+    bool getAccountByUsername(const std::string& username, AccountInfo& outAccount);
+    bool createSession(const std::string& sessionId, const std::string& accountUuid, const std::string& refreshTokenHash);
+    bool getSessionAndAccount(const std::string& refreshTokenHash, AccountInfo& outAccount);
+    void revokeSession(const std::string& refreshTokenHash);
 
 private:
     void workerThreadLoop();

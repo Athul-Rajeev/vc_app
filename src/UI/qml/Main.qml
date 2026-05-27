@@ -1069,17 +1069,39 @@ ApplicationWindow {
                         color: "#DBDEE1"
                         font.pixelSize: 16
                         selectionColor: "#5865F2"
+                    }
+                }
 
-                        Text {
-                            anchors.fill: parent
-                            verticalAlignment: Text.AlignVCenter
-                            text: "your-username"
-                            color: "#6D6F78"
-                            font.pixelSize: 16
-                            visible: loginInput.text.length === 0
-                        }
+                Item { height: 20; width: 1 }
 
-                        Keys.onReturnPressed: loginJoinBtn.doLogin()
+                Text {
+                    text: "PASSWORD"
+                    color: "#B5BAC1"
+                    font.pixelSize: 12
+                    font.weight: Font.Bold
+                    font.letterSpacing: 0.5
+                }
+
+                Item { height: 8; width: 1 }
+
+                Rectangle {
+                    width: parent.width
+                    height: 44
+                    color: "#1E1F22"
+                    radius: 4
+                    border.color: passwordInput.activeFocus ? "#5865F2" : "transparent"
+                    border.width: 1
+
+                    TextInput {
+                        id: passwordInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: "#DBDEE1"
+                        font.pixelSize: 16
+                        selectionColor: "#5865F2"
+                        echoMode: TextInput.Password
                     }
                 }
 
@@ -1095,12 +1117,13 @@ ApplicationWindow {
 
                     function doLogin() {
                         let u = loginInput.text.trim()
-                        if (u.length > 0) backend.login(u)
+                        let p = passwordInput.text.trim()
+                        if (u.length > 0 && p.length > 0) backend.login(u, p)
                     }
 
                     Text {
                         anchors.centerIn: parent
-                        text: "Continue"
+                        text: "Login / Register"
                         color: "white"
                         font.pixelSize: 16
                         font.weight: Font.Medium

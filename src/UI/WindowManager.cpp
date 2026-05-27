@@ -117,6 +117,24 @@ std::string WindowManager::getPendingNewVoiceChannel()
     return m_backend ? m_backend->dequeuePendingVoiceChannel() : "";
 }
 
+bool WindowManager::getPendingLogin(std::string& outUser, std::string& outPass)
+{
+    if (!m_backend) return false;
+    LoginRequest req;
+    if (m_backend->dequeuePendingLogin(req))
+    {
+        outUser = req.username;
+        outPass = req.password;
+        return true;
+    }
+    return false;
+}
+
+bool WindowManager::getPendingLogout()
+{
+    return m_backend && m_backend->dequeuePendingLogout();
+}
+
 // ─────────────────────────────────────────────────────────────
 // Thread-safe setters
 // ─────────────────────────────────────────────────────────────
@@ -155,6 +173,16 @@ void WindowManager::setUiUpdateCallback(std::function<void()> callback)
     {
         m_backend->setNotifyCallback(m_uiCallback);
     }
+}
+
+void WindowManager::confirmLogin(const std::string& username)
+{
+    if (m_backend) m_backend->confirmLogin(username);
+}
+
+void WindowManager::confirmLogout()
+{
+    if (m_backend) m_backend->confirmLogout();
 }
 
 int WindowManager::exec()

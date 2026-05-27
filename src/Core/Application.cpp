@@ -88,7 +88,7 @@ void Application::runMainLoop(const std::string& targetIp)
     }
     else
     {
-spdlog::info("Starting Client Engine targeting: {}", targetIp);
+        spdlog::info("Starting Client Engine targeting: {}", targetIp);
         m_networkProvider->setUdpReceiveCallback([this](const auto& endpoint, const auto* data, auto size)
         {
             onClientUdpPacket(endpoint, data, size);
@@ -231,29 +231,109 @@ void Application::serverControlLoop()
         }
         else if (parsedRequest.messageType == "LOGIN")
         {
-            std::string username;
-            std::string clientUdpPort;
+            std::string username, password, clientUdpPort;
             std::getline(dataStream, username, '|');
+            std::getline(dataStream, password, '|');
             std::getline(dataStream, clientUdpPort);
-            
+
+            AccountInfo account;
+            bool accountExists = m_dbManager->getAccountByUsername(username, account);
+            std::string activeUuid;
+
+            if (!accountExists)
+            {
+                spdlog::info("Account not found. Auto-registering new user: {}", username);
+                std::string salt = Utils::generateSalt();
+                std::string hash = Utils::hashPassword(password, salt);
+                activeUuid = Utils::generateRandomUUID();
+                if (!m_dbManager->createAccount(activeUuid, username, hash, salt))
+                {
+                    return "AUTH_FAILED|Registration failed";
+                }
+            }
+            else
+            {
+                std::string hash = Utils::hashPassword(password, account.passwordSalt);
+                if (hash != account.passwordHash)
+                {
+                    spdlog::warn("Invalid password for user: {}", username);
+                    return "AUTH_FAILED|Invalid password";
+                }
+                activeUuid = account.accountUuid;
+            }
+
+            std::string sessionToken = Utils::generateRandomUUID();
+            std::string tokenHash = Utils::hashString(sessionToken);
+            m_dbManager->createSession(Utils::generateRandomUUID(), activeUuid, tokenHash);
+
             ClientProfile profile;
             profile.username = username;
             profile.activeChannelId = -1;
             profile.isMuted = false;
             profile.isDeafened = false;
-            
             std::string rawIp = incomingIp.substr(0, incomingIp.find(':'));
             profile.latestUdpEndpoint = rawIp + ":" + (clientUdpPort.empty() ? "50000" : clientUdpPort);
             
-            clientMap[parsedRequest.senderUuid] = profile;
-            spdlog::info("User logged in: {} with UUID: {}", username, parsedRequest.senderUuid);
-            
+            clientMap[activeUuid] = profile;
+            spdlog::info("User authenticated: {} with UUID: {}", username, activeUuid);
+
+            // Register endpoint immediately
             PeerRoutingState routingUpdate;
-            std::strncpy(routingUpdate.uuid, parsedRequest.senderUuid.c_str(), uuidLen);
+            std::strncpy(routingUpdate.uuid, activeUuid.c_str(), uuidLen);
             std::strncpy(routingUpdate.endpoint, profile.latestUdpEndpoint.c_str(), 64);
             routingUpdate.activeChannelId = profile.activeChannelId;
             m_routingQueue.forcePush(routingUpdate);
 
+            broadcastGlobalVoiceState();
+
+            return "AUTH_SUCCESS|" + activeUuid + "|" + sessionToken + "|" + username;
+        }
+        else if (parsedRequest.messageType == "AUTH_SESSION")
+        {
+            std::string sessionToken, clientUdpPort;
+            std::getline(dataStream, sessionToken, '|');
+            std::getline(dataStream, clientUdpPort);
+
+            AccountInfo account;
+            std::string tokenHash = Utils::hashString(sessionToken);
+            
+            if (!m_dbManager->getSessionAndAccount(tokenHash, account))
+            {
+                spdlog::warn("Invalid or expired session token presented.");
+                return "AUTH_FAILED|Session expired";
+            }
+
+            ClientProfile profile;
+            profile.username = account.username;
+            profile.activeChannelId = -1;
+            profile.isMuted = false;
+            profile.isDeafened = false;
+            std::string rawIp = incomingIp.substr(0, incomingIp.find(':'));
+            profile.latestUdpEndpoint = rawIp + ":" + (clientUdpPort.empty() ? "50000" : clientUdpPort);
+            
+            clientMap[account.accountUuid] = profile;
+            spdlog::info("User session restored: {}", account.username);
+
+            // Register endpoint immediately
+            PeerRoutingState routingUpdate;
+            std::strncpy(routingUpdate.uuid, account.accountUuid.c_str(), uuidLen);
+            std::strncpy(routingUpdate.endpoint, profile.latestUdpEndpoint.c_str(), 64);
+            routingUpdate.activeChannelId = profile.activeChannelId;
+            m_routingQueue.forcePush(routingUpdate);
+
+            broadcastGlobalVoiceState();
+
+            return "AUTH_SUCCESS|" + account.accountUuid + "|" + sessionToken + "|" + account.username;
+        }
+        else if (parsedRequest.messageType == "LOGOUT")
+        {
+            std::string sessionToken;
+            std::getline(dataStream, sessionToken);
+            
+            spdlog::info("User logging out, revoking session. UUID: {}", parsedRequest.senderUuid);
+            m_dbManager->revokeSession(Utils::hashString(sessionToken));
+            clientMap.erase(parsedRequest.senderUuid);
+            
             broadcastGlobalVoiceState();
             return "ACK";
         }
@@ -378,8 +458,6 @@ void Application::serverControlLoop()
 void Application::clientControlLoop(const std::string& serverIp)
 {
     spdlog::trace("Client control loop started");
-    std::string localUuid = Utils::getHardwareUUID();
-    bool hasLoggedIn = false;
     
     auto lastHeartbeatTime = std::chrono::steady_clock::now();
 
@@ -390,25 +468,17 @@ void Application::clientControlLoop(const std::string& serverIp)
 
     m_windowManager.setUiUpdateCallback([this]()
     {
-        m_clientCv.notify_one(); // Wake loop instantly on UI interaction
+        m_clientCv.notify_one(); 
     });
 
     while (m_isRunning.load(std::memory_order_acquire))
     {
-        if (!m_windowManager.isLoggedIn())
-        {
-            std::unique_lock<std::mutex> lock(m_clientMutex);
-            m_clientCv.wait_for(lock, std::chrono::milliseconds(250)); 
-            continue;
-        }
-
-        processActiveClientState(serverIp, localUuid, hasLoggedIn, lastHeartbeatTime, pushHandler);
+        processActiveClientState(serverIp, lastHeartbeatTime, pushHandler);
         
         auto currentTime = std::chrono::steady_clock::now();
         auto timeSinceHeartbeat = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastHeartbeatTime).count();
         int timeUntilHeartbeat = std::max<int>(10, heartbeatIntervalMs - timeSinceHeartbeat);
         
-        // Sleep until UI notifies us, or time to send a heartbeat (cap at 2000ms failsafe)
         int sleepTime = std::min<int>(timeUntilHeartbeat, 2000);
 
         std::unique_lock<std::mutex> lock(m_clientMutex);
@@ -416,41 +486,84 @@ void Application::clientControlLoop(const std::string& serverIp)
     }
 }
 
-void Application::processActiveClientState(const std::string& serverIp, const std::string& localUuid, bool& hasLoggedIn, std::chrono::steady_clock::time_point& lastHeartbeatTime, const std::function<void(const std::string&)>& pushHandler)
+void Application::processActiveClientState(const std::string& serverIp, std::chrono::steady_clock::time_point& lastHeartbeatTime, const std::function<void(const std::string&)>& pushHandler)
 {
-    if (!hasLoggedIn)
+    static bool authRequestInFlight = false;
+
+    std::string currentUuid;
     {
-        spdlog::debug("Attempting to establish persistent TCP connection to {}", serverIp);
-        bool connected = m_networkManager.connectPersistentTcp(serverIp, pushHandler);
-        if (!connected)
+        std::lock_guard<std::mutex> lock(m_uuidMutex);
+        currentUuid = m_activeServerUuid;
+    }
+
+    // 1. NOT LOGGED IN PHASE
+    if (currentUuid.empty())
+    {
+        // If we already fired off the auth request, chill out and wait for the server's push response
+        if (authRequestInFlight)
+        {
+            return; 
+        }
+
+        std::string savedToken = Utils::getSavedSessionToken();
+        std::string pendingUser, pendingPass;
+        bool hasManualLogin = m_windowManager.getPendingLogin(pendingUser, pendingPass);
+
+        // DO NOT connect to TCP unless we actually have credentials or a token to send
+        if (savedToken.empty() && !hasManualLogin)
+        {
+            return; 
+        }
+
+        spdlog::debug("Connecting to persistent TCP to dispatch auth request...");
+        if (!m_networkManager.connectPersistentTcp(serverIp, pushHandler))
         {
             spdlog::warn("Failed to connect to server. Retrying...");
             std::this_thread::sleep_for(std::chrono::seconds(2));
             return;
         }
 
-        std::string localUsername = m_windowManager.getUsername();
         int localAudioPort = m_networkManager.getLocalUdpPort();
+
+        if (hasManualLogin)
+        {
+            spdlog::info("Attempting login/registration for user: {}", pendingUser);
+            m_networkManager.sendPersistentTcp("LOGIN||" + pendingUser + "|" + pendingPass + "|" + std::to_string(localAudioPort));
+        }
+        else
+        {
+            spdlog::info("Found saved session token. Attempting silent login...");
+            m_networkManager.sendPersistentTcp("AUTH_SESSION||" + savedToken + "|" + std::to_string(localAudioPort));
+        }
         
-        spdlog::info("Connected. Sending LOGIN packet as {}", localUsername);
-        m_networkManager.sendPersistentTcp("LOGIN|" + localUuid + "|" + localUsername + "|" + std::to_string(localAudioPort));
-        m_networkManager.sendPersistentTcp("SYNC_CHANNELS|" + localUuid);
-        
-        int initialTextChannelId = m_windowManager.getSelectedTextChannelId();
-        m_textChannelState.joinChannel(initialTextChannelId);
-        m_networkManager.sendPersistentTcp("REQ_CHAT_LOG|" + localUuid + "|" + std::to_string(initialTextChannelId));
-        
-        hasLoggedIn = true;
-        lastHeartbeatTime = std::chrono::steady_clock::now();
+        authRequestInFlight = true;
+        return;
     }
-    
+
+    // 2. LOGGED IN PHASE
+    authRequestInFlight = false; // Successfully authenticated
+
+    // Check for Logout Request
+    if (m_windowManager.getPendingLogout())
+    {
+        spdlog::info("User requested logout.");
+        m_networkManager.sendPersistentTcp("LOGOUT|" + currentUuid + "|" + Utils::getSavedSessionToken());
+        Utils::clearSessionToken();
+        {
+            std::lock_guard<std::mutex> lock(m_uuidMutex);
+            m_activeServerUuid = "";
+        }
+        m_windowManager.confirmLogout();
+        return;
+    }
+
     auto currentTime = std::chrono::steady_clock::now();
     auto elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastHeartbeatTime).count();
     
     if (elapsedTime >= heartbeatIntervalMs)
     {
         spdlog::trace("Sending heartbeat to server");
-        m_networkManager.sendPersistentTcp("HEARTBEAT|" + localUuid);
+        m_networkManager.sendPersistentTcp("HEARTBEAT|" + currentUuid);
         lastHeartbeatTime = currentTime;
     }
     
@@ -478,7 +591,7 @@ void Application::processActiveClientState(const std::string& serverIp, const st
         m_isMuted.store(uiMuted, std::memory_order_release);
         m_isDeafened.store(uiDeafened, std::memory_order_release);
 
-        m_networkManager.sendPersistentTcp("STATE|" + localUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + (uiMuted ? "1" : "0") + "|" + (uiDeafened ? "1" : "0"));
+        m_networkManager.sendPersistentTcp("STATE|" + currentUuid + "|" + std::to_string(uiVoiceChannelId) + "|" + (uiMuted ? "1" : "0") + "|" + (uiDeafened ? "1" : "0"));
     }
     
     int uiTextChannelId = m_windowManager.getSelectedTextChannelId();
@@ -487,44 +600,52 @@ void Application::processActiveClientState(const std::string& serverIp, const st
     {
         spdlog::debug("Joining text channel {}", uiTextChannelId);
         m_textChannelState.joinChannel(uiTextChannelId);
-        m_networkManager.sendPersistentTcp("REQ_CHAT_LOG|" + localUuid + "|" + std::to_string(uiTextChannelId));
+        m_networkManager.sendPersistentTcp("REQ_CHAT_LOG|" + currentUuid + "|" + std::to_string(uiTextChannelId));
     }
 
     std::string outgoingMessage = m_windowManager.getPendingOutgoingMessage();
     if (!outgoingMessage.empty())
     {
         spdlog::debug("Sending chat message to channel {}", uiTextChannelId);
-        m_networkManager.sendPersistentTcp("CHAT|" + localUuid + "|" + std::to_string(uiTextChannelId) + "|" + outgoingMessage);
+        m_networkManager.sendPersistentTcp("CHAT|" + currentUuid + "|" + std::to_string(uiTextChannelId) + "|" + outgoingMessage);
     }
 
     std::string newTextChannel = m_windowManager.getPendingNewTextChannel();
     if (!newTextChannel.empty())
     {
-        spdlog::info("Requesting new text channel: {}", newTextChannel);
-        m_networkManager.sendPersistentTcp("CREATE_CHANNEL|" + localUuid + "|TEXT|" + newTextChannel);
+        m_networkManager.sendPersistentTcp("CREATE_CHANNEL|" + currentUuid + "|TEXT|" + newTextChannel);
     }
 
     std::string newVoiceChannel = m_windowManager.getPendingNewVoiceChannel();
     if (!newVoiceChannel.empty())
     {
-        spdlog::info("Requesting new voice channel: {}", newVoiceChannel);
-        m_networkManager.sendPersistentTcp("CREATE_CHANNEL|" + localUuid + "|VOICE|" + newVoiceChannel);
+        m_networkManager.sendPersistentTcp("CREATE_CHANNEL|" + currentUuid + "|VOICE|" + newVoiceChannel);
     }
 }
 
 void Application::clientOutgoingAudioLoop(const std::string& serverIp)
 {
     spdlog::trace("Client outgoing audio loop started");
-    std::string localUuid = Utils::getHardwareUUID();
 
     while (m_isRunning.load(std::memory_order_acquire))
     {
-        // Thread sleeps at 0% CPU until hardware provides an audio frame
         std::vector<uint8_t> outgoingAudio = m_audioEngine.waitForOutgoingPacket(250);
         
         if (outgoingAudio.empty())
         {
-            continue; // Loop back to check m_isRunning
+            continue; 
+        }
+
+        std::string currentUuid;
+        {
+            std::lock_guard<std::mutex> lock(m_uuidMutex);
+            currentUuid = m_activeServerUuid;
+        }
+
+        if (currentUuid.empty() || currentUuid.length() != uuidLen)
+        {
+            m_audioEngine.getOutgoingPacket(); // Drain backlog
+            continue;
         }
 
         int currentChannel = m_activeVoiceChannelId.load(std::memory_order_acquire);
@@ -535,12 +656,11 @@ void Application::clientOutgoingAudioLoop(const std::string& serverIp)
         {
             if (currentChannel != -1 && !isMuted && !isDeafened)
             {
-                auto sfuPacket = std::make_shared<std::vector<uint8_t>>(localUuid.begin(), localUuid.end());
+                auto sfuPacket = std::make_shared<std::vector<uint8_t>>(currentUuid.begin(), currentUuid.end());
                 sfuPacket->insert(sfuPacket->end(), outgoingAudio.begin(), outgoingAudio.end());
                 m_networkProvider->sendDataAsync(serverIp, sfuPacket);
             }
 
-            // Immediately clear any backlog
             outgoingAudio = m_audioEngine.getOutgoingPacket();
         }
     }
@@ -549,6 +669,40 @@ void Application::clientOutgoingAudioLoop(const std::string& serverIp)
 void Application::processClientTcpPush(const std::string& payload)
 {
     spdlog::trace("Processing client TCP push payload. Length: {}", payload.length());
+
+    if (payload.find("AUTH_SUCCESS|") == 0)
+    {
+        std::istringstream stream(payload.substr(13));
+        std::string serverUuid, token, username;
+        std::getline(stream, serverUuid, '|');
+        std::getline(stream, token, '|');
+        std::getline(stream, username);
+        
+        Utils::saveSessionToken(token);
+        
+        {
+            std::lock_guard<std::mutex> lock(m_uuidMutex);
+            m_activeServerUuid = serverUuid;
+        }
+
+        m_windowManager.confirmLogin(username);
+        
+        spdlog::info("Authentication successful. UUID assigned: {}", serverUuid);
+        
+        m_networkManager.sendPersistentTcp("SYNC_CHANNELS|" + serverUuid);
+        int initialTextChannelId = m_windowManager.getSelectedTextChannelId();
+        m_textChannelState.joinChannel(initialTextChannelId);
+        m_networkManager.sendPersistentTcp("REQ_CHAT_LOG|" + serverUuid + "|" + std::to_string(initialTextChannelId));
+        return;
+    }
+    else if (payload.find("AUTH_FAILED|") == 0)
+    {
+        std::string reason = payload.substr(12);
+        spdlog::warn("Authentication failed: {}", reason);
+        Utils::clearSessionToken();
+        m_windowManager.confirmLogout();
+        return;
+    }
 
     if (payload == "ACK" || payload == "HEARTBEAT_ACK")
     {
@@ -640,7 +794,8 @@ void Application::runAudioQualityTest(const std::string& inputWavPath, const std
     std::vector<int16_t> inputPcm = WavUtils::readWav(inputWavPath);
     std::vector<int16_t> outputPcm;
     
-    std::string localUuid = Utils::getHardwareUUID();
+    // Generate a temporary UUID for the loopback test
+    std::string localUuid = Utils::generateRandomUUID();
     int localPort = m_networkProvider->getLocalUdpPort();
     std::string localhostIp = "127.0.0.1:" + std::to_string(localPort);
 

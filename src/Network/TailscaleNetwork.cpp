@@ -159,33 +159,41 @@ void TailscaleNetwork::startTcpAcceptor(std::function<std::string(const std::str
         {
             spdlog::trace("TCP message received from endpoint. Length: {}", payload.length());
             
-            size_t firstPipe  = payload.find('|');
-            size_t secondPipe = payload.find('|', firstPipe + 1);
-            std::string messageType = payload.substr(0, firstPipe);
-
-            bool hasValidPipes = firstPipe != std::string::npos && secondPipe != std::string::npos;
-            if (hasValidPipes && messageType == "LOGIN")
-            {
-                std::string clientUuid = payload.substr(firstPipe + 1, secondPipe - firstPipe - 1);
-                std::lock_guard<std::mutex> lock(m_sessionMutex);
-
-                // ACTIVE OVERRIDE: Kill the ghost connection if it exists
-                auto existing = m_activeSessions.find(clientUuid);
-                if (existing != m_activeSessions.end())
-                {
-                    spdlog::warn("Ghost connection detected for UUID: {}. Overriding previous session.", clientUuid);
-                    existing->second->closeSession();
-                }
-
-                activeSession->setClientUuid(clientUuid);
-                m_activeSessions[clientUuid] = activeSession;
-                spdlog::info("Client logged in successfully. Tracked UUID: {}", clientUuid);
-            }
-
             // Pass the payload up to Application.cpp's logic
             std::string response = requestHandler(activeSession->getRemoteEndpoint(), payload);
+            
             if (!response.empty())
             {
+                // If the application layer successfully authenticated the user, map their new UUID
+                if (response.find("AUTH_SUCCESS|") == 0)
+                {
+                    size_t firstPipe = response.find('|');
+                    size_t secondPipe = response.find('|', firstPipe + 1);
+                    
+                    if (firstPipe != std::string::npos && secondPipe != std::string::npos)
+                    {
+                        std::string assignedUuid = response.substr(firstPipe + 1, secondPipe - firstPipe - 1);
+                        std::lock_guard<std::mutex> lock(m_sessionMutex);
+                        
+                        std::string oldUuid = activeSession->getClientUuid();
+                        if (!oldUuid.empty() && m_activeSessions.count(oldUuid))
+                        {
+                            m_activeSessions.erase(oldUuid);
+                        }
+                        
+                        auto existingSession = m_activeSessions.find(assignedUuid);
+                        if (existingSession != m_activeSessions.end() && existingSession->second != activeSession)
+                        {
+                            spdlog::warn("Ghost connection detected for UUID: {}. Overriding previous session.", assignedUuid);
+                            existingSession->second->closeSession();
+                        }
+
+                        activeSession->setClientUuid(assignedUuid);
+                        m_activeSessions[assignedUuid] = activeSession;
+                        spdlog::info("TCP Session securely mapped to UUID: {}", assignedUuid);
+                    }
+                }
+
                 spdlog::trace("Sending TCP response back to {}", activeSession->getRemoteEndpoint());
                 activeSession->sendData(response);
             }

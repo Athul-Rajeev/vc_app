@@ -27,8 +27,6 @@ DiscordBackend::DiscordBackend(QObject* parent)
     m_speakerTimer->setInterval(50);
     connect(m_speakerTimer, &QTimer::timeout, this, &DiscordBackend::onSpeakerDecay);
     m_speakerTimer->start();
-
-    tryLoadSavedUsername();
 }
 
 DiscordBackend::~DiscordBackend() = default;
@@ -49,14 +47,26 @@ QVariantList DiscordBackend::chatMessages()          const { return m_chatMessag
 // ─────────────────────────────────────────────────────────────
 // QML-invokable actions
 // ─────────────────────────────────────────────────────────────
-void DiscordBackend::login(const QString& user)
+void DiscordBackend::login(const QString& user, const QString& pass)
 {
-    if (user.trimmed().isEmpty()) return;
-    m_username = user.trimmed();
-    m_isLoggedIn.store(true);
-    saveUsername(m_username);
-    emit usernameChanged();
-    emit isLoggedInChanged();
+    if (user.trimmed().isEmpty() || pass.trimmed().isEmpty()) 
+    {
+        return;
+    }
+    
+    {
+        QMutexLocker lock(&m_queueMutex);
+        m_pendingLogins.enqueue({user.trimmed().toStdString(), pass.trimmed().toStdString()});
+    }
+    notifyUiChanged();
+}
+
+void DiscordBackend::logout()
+{
+    {
+        QMutexLocker lock(&m_queueMutex);
+        m_pendingLogout = true;
+    }
     notifyUiChanged();
 }
 
@@ -254,6 +264,28 @@ std::string DiscordBackend::dequeuePendingVoiceChannel()
     return m_pendingVoiceChannels.isEmpty() ? "" : m_pendingVoiceChannels.dequeue().toStdString();
 }
 
+bool DiscordBackend::dequeuePendingLogin(LoginRequest& outRequest)
+{
+    QMutexLocker lock(&m_queueMutex);
+    if (!m_pendingLogins.isEmpty())
+    {
+        outRequest = m_pendingLogins.dequeue();
+        return true;
+    }
+    return false;
+}
+
+bool DiscordBackend::dequeuePendingLogout()
+{
+    QMutexLocker lock(&m_queueMutex);
+    if (m_pendingLogout)
+    {
+        m_pendingLogout = false;
+        return true;
+    }
+    return false;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Private slots
 // ─────────────────────────────────────────────────────────────
@@ -356,29 +388,6 @@ QVariantMap DiscordBackend::parsePeerEntry(const QString& entry)
     return m;
 }
 
-void DiscordBackend::tryLoadSavedUsername()
-{
-    QString path = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-                   + "/" + kSettingsFile;
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
-    QString saved = QTextStream(&f).readAll().trimmed();
-    if (!saved.isEmpty()) {
-        m_username = saved;
-        m_isLoggedIn.store(true);
-    }
-}
-
-void DiscordBackend::saveUsername(const QString& user)
-{
-    QString path = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-                   + "/" + kSettingsFile;
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    QFile f(path);
-    if (f.open(QIODevice::WriteOnly | QIODevice::Text))
-        QTextStream(&f) << user;
-}
-
 void DiscordBackend::setNotifyCallback(std::function<void()> cb)
 {
     m_uiCallback = std::move(cb);
@@ -390,4 +399,22 @@ void DiscordBackend::notifyUiChanged()
     {
         m_uiCallback();
     }
+}
+
+void DiscordBackend::confirmLogin(const std::string& username)
+{
+    m_username = QString::fromStdString(username);
+    m_isLoggedIn.store(true);
+    emit usernameChanged();
+    emit isLoggedInChanged();
+    notifyUiChanged();
+}
+
+void DiscordBackend::confirmLogout()
+{
+    m_username = "";
+    m_isLoggedIn.store(false);
+    emit usernameChanged();
+    emit isLoggedInChanged();
+    notifyUiChanged();
 }

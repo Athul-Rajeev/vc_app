@@ -33,6 +33,11 @@ public:
     std::string getPendingOutgoingMessage();
     std::string getPendingNewTextChannel();
     std::string getPendingNewVoiceChannel();
+    bool getPendingLogin(std::string& outUser, std::string& outPass);
+    bool getPendingLogout();
+
+    void confirmLogin(const std::string& username);
+    void confirmLogout();
 
     // ── Thread-safe UI setters ─────────────────────────────────
     void setChannels(const std::vector<std::pair<int,std::string>>& textChannels,

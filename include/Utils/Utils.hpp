@@ -3,6 +3,7 @@
 #include <fstream>
 #include <random>
 #include <cinttypes>
+#include <functional>
 
 namespace Utils
 {
@@ -28,77 +29,45 @@ inline std::string generateRandomUUID()
     return std::string(uuidBuffer);
 }
 
-inline std::string formatToUUID(const std::string& input)
+inline std::string generateSalt()
 {
-    if (input.length() != 32) return input;
-    return input.substr(0, 8) + "-" +
-           input.substr(8, 4) + "-" +
-           input.substr(12, 4) + "-" +
-           input.substr(16, 4) + "-" +
-           input.substr(20);
+    return generateRandomUUID();
 }
 
-inline std::string getHardwareUUID()
+inline std::string hashString(const std::string& input)
 {
-    std::string uuid;
-    
-    // 1. Try to read from cache file first
-    std::ifstream cachedUuidFile(".voicechat_uuid");
-    if (cachedUuidFile.is_open())
-    {
-        std::getline(cachedUuidFile, uuid);
-        if (!uuid.empty())
-        {
-            return uuid;
-        }
-    }
-
-    // 2. Try to read from system machine-id
-    std::ifstream machineIdFile("/etc/machine-id");
-    if (machineIdFile.is_open())
-    {
-        std::string rawId;
-        std::getline(machineIdFile, rawId);
-        if (!rawId.empty())
-        {
-            uuid = formatToUUID(rawId);
-        }
-    }
-
-    // 3. Fallback to random if still empty
-    if (uuid.empty())
-    {
-        uuid = generateRandomUUID();
-    }
-
-    // 4. Always ensure the resulting UUID is cached to .voicechat_uuid
-    std::ofstream newCachedUuidFile(".voicechat_uuid");
-    if (newCachedUuidFile.is_open())
-    {
-        newCachedUuidFile << uuid << std::endl;
-    }
-
-    return uuid;
+    std::hash<std::string> hasher;
+    return std::to_string(hasher(input));
 }
 
-inline void saveUsername(const std::string& username)
+inline std::string hashPassword(const std::string& password, const std::string& salt)
 {
-    std::ofstream outputFile(".voicechat_user");
+    return hashString(password + salt);
+}
+
+inline void saveSessionToken(const std::string& token)
+{
+    std::ofstream outputFile(".voicechat_session");
     if (outputFile.is_open())
     {
-        outputFile << username << std::endl;
+        outputFile << token << std::endl;
     }
 }
 
-inline std::string getSavedUsername()
+inline std::string getSavedSessionToken()
 {
-    std::string username;
-    std::ifstream inputFile(".voicechat_user");
+    std::string token;
+    std::ifstream inputFile(".voicechat_session");
     if (inputFile.is_open())
     {
-        std::getline(inputFile, username);
+        std::getline(inputFile, token);
     }
-    return username;
+    return token;
+}
+
+inline void clearSessionToken()
+{
+    std::remove(".voicechat_session");
 }
 
 } // namespace Utils

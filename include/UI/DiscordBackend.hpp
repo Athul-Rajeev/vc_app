@@ -28,6 +28,13 @@
  * All setters are thread-safe (emit queued signals to the main thread).
  * All Q_PROPERTYs are read from the main thread by QML.
  */
+
+ struct LoginRequest
+{
+    std::string username;
+    std::string password;
+};
+
 class DiscordBackend : public QObject
 {
     std::function<void()> m_uiCallback;
@@ -61,8 +68,8 @@ public:
     QVariantList chatMessages()          const;
 
     // ── QML-invokable actions ───────────────────────────────────
-    Q_INVOKABLE void login(const QString& user);
-    Q_INVOKABLE void sendMessage(const QString& text);
+    Q_INVOKABLE void login(const QString& user, const QString& pass);    Q_INVOKABLE void sendMessage(const QString& text);
+    Q_INVOKABLE void logout();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleDeafen();
     Q_INVOKABLE void joinVoiceChannel(int channelId);
@@ -72,6 +79,9 @@ public:
     Q_INVOKABLE void requestNewVoiceChannel(const QString& name);
     Q_INVOKABLE QString avatarColor(const QString& name) const;
     Q_INVOKABLE QString channelNameForId(int id) const;
+
+    void confirmLogin(const std::string& username);
+    void confirmLogout();
 
     // ── Thread-safe setters (call from any thread) ─────────────
     void setChannels(const std::vector<std::pair<int,std::string>>& text,
@@ -86,6 +96,8 @@ public:
     std::string dequeuePendingMessage();
     std::string dequeuePendingTextChannel();
     std::string dequeuePendingVoiceChannel();
+    bool dequeuePendingLogin(LoginRequest& outRequest);
+    bool dequeuePendingLogout();
 
 signals:
     void usernameChanged();
@@ -115,8 +127,6 @@ private slots:
     void onSpeakerDecay();
 
 private:
-    void tryLoadSavedUsername();
-    void saveUsername(const QString& user);
     void rebuildVoiceChannelsWithPeers();
     static QVariantMap parsePeerEntry(const QString& entry);
 
@@ -138,9 +148,12 @@ private:
 
     // ── Output queues (guarded by m_queueMutex) ─────────────────
     mutable QMutex m_queueMutex;
+    QQueue<LoginRequest> m_pendingLogins;
     QQueue<QString> m_pendingMessages;
     QQueue<QString> m_pendingTextChannels;
     QQueue<QString> m_pendingVoiceChannels;
+
+    bool m_pendingLogout{false};
 
     QTimer* m_speakerTimer = nullptr;
 
