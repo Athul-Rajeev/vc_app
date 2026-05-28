@@ -84,6 +84,7 @@ private:
     std::thread m_routerThread;
     std::string m_activeServerUuid;
     std::mutex m_uuidMutex;
+    std::atomic<bool> m_authRequestInFlight{false};
 
     std::mutex m_clientMutex;
     std::condition_variable m_clientCv;

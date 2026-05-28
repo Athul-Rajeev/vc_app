@@ -1105,7 +1105,24 @@ ApplicationWindow {
                     }
                 }
 
-                Item { height: 20; width: 1 }
+                Item { height: 8; width: 1 }
+
+                // This is the new error text block
+                Text {
+                    width: parent.width
+                    text: backend.loginError
+                    color: "#ED4245" // Discord red
+                    font.pixelSize: 13
+                    font.italic: true
+                    visible: backend.loginError.length > 0
+                    wrapMode: Text.WordWrap
+                }
+
+                // This is the dynamic spacer
+                Item { 
+                    height: backend.loginError.length > 0 ? 12 : 20 
+                    width: 1 
+                }
 
                 Rectangle {
                     id: loginJoinBtn

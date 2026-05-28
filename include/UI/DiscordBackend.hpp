@@ -51,6 +51,7 @@ class DiscordBackend : public QObject
     Q_PROPERTY(QVariantList textChannels     READ textChannels         NOTIFY textChannelsChanged)
     Q_PROPERTY(QVariantList voiceChannels    READ voiceChannels        NOTIFY voiceChannelsChanged)
     Q_PROPERTY(QVariantList chatMessages     READ chatMessages         NOTIFY chatMessagesChanged)
+    Q_PROPERTY(QString      loginError       READ loginError           NOTIFY loginErrorChanged)
 
 public:
     explicit DiscordBackend(QObject* parent = nullptr);
@@ -66,6 +67,7 @@ public:
     QVariantList textChannels()          const;
     QVariantList voiceChannels()         const;
     QVariantList chatMessages()          const;
+    QString      loginError()            const;
 
     // ── QML-invokable actions ───────────────────────────────────
     Q_INVOKABLE void login(const QString& user, const QString& pass);    Q_INVOKABLE void sendMessage(const QString& text);
@@ -91,6 +93,7 @@ public:
     void setVoicePeers(const std::vector<std::string>& peerDataList);
     void markSpeakerActive(const std::string& uuid);
     void setNotifyCallback(std::function<void()> cb);
+    void setLoginError(const QString& error);
 
     // ── Output queues (call from any thread) ───────────────────
     std::string dequeuePendingMessage();
@@ -110,6 +113,7 @@ signals:
     void voiceChannelsChanged();
     void chatMessagesChanged();
     void requestScrollToBottom();
+    void loginErrorChanged();
 
     // Internal cross-thread relay signals
     void _setChannels(QVariantList text, QVariantList voice);
@@ -132,6 +136,7 @@ private:
 
     // ── State (main-thread read, atomic write) ──────────────────
     QString           m_username;
+    QString           m_loginError;
     std::atomic<bool> m_isLoggedIn           {false};
     std::atomic<bool> m_isMuted              {false};
     std::atomic<bool> m_isDeafened           {false};

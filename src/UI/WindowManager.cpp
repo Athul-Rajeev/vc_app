@@ -185,6 +185,14 @@ void WindowManager::confirmLogout()
     if (m_backend) m_backend->confirmLogout();
 }
 
+void WindowManager::setLoginError(const std::string& error)
+{
+    if (m_backend) 
+    {
+        m_backend->setLoginError(QString::fromStdString(error));
+    }
+}
+
 int WindowManager::exec()
 {
     if (!m_initialized || !m_app) return -1;

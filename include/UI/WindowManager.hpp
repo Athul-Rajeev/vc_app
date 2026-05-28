@@ -38,6 +38,7 @@ public:
 
     void confirmLogin(const std::string& username);
     void confirmLogout();
+    void setLoginError(const std::string& error);
 
     // ── Thread-safe UI setters ─────────────────────────────────
     void setChannels(const std::vector<std::pair<int,std::string>>& textChannels,

@@ -488,7 +488,6 @@ void Application::clientControlLoop(const std::string& serverIp)
 
 void Application::processActiveClientState(const std::string& serverIp, std::chrono::steady_clock::time_point& lastHeartbeatTime, const std::function<void(const std::string&)>& pushHandler)
 {
-    static bool authRequestInFlight = false;
 
     std::string currentUuid;
     {
@@ -500,7 +499,7 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
     if (currentUuid.empty())
     {
         // If we already fired off the auth request, chill out and wait for the server's push response
-        if (authRequestInFlight)
+        if (m_authRequestInFlight.load())
         {
             return; 
         }
@@ -536,12 +535,12 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
             m_networkManager.sendPersistentTcp("AUTH_SESSION||" + savedToken + "|" + std::to_string(localAudioPort));
         }
         
-        authRequestInFlight = true;
+        m_authRequestInFlight.store(true);
         return;
     }
 
     // 2. LOGGED IN PHASE
-    authRequestInFlight = false; // Successfully authenticated
+    m_authRequestInFlight.store(false); // Successfully authenticated
 
     // Check for Logout Request
     if (m_windowManager.getPendingLogout())
@@ -700,7 +699,11 @@ void Application::processClientTcpPush(const std::string& payload)
         std::string reason = payload.substr(12);
         spdlog::warn("Authentication failed: {}", reason);
         Utils::clearSessionToken();
+        
+        m_windowManager.setLoginError(reason); // Pass the error text to the UI
         m_windowManager.confirmLogout();
+        
+        m_authRequestInFlight.store(false);
         return;
     }
 

@@ -43,6 +43,7 @@ int          DiscordBackend::activeVoiceChannelId()  const { return m_activeVoic
 QVariantList DiscordBackend::textChannels()          const { return m_textChannels; }
 QVariantList DiscordBackend::voiceChannels()         const { return m_voiceChannels; }
 QVariantList DiscordBackend::chatMessages()          const { return m_chatMessages; }
+QString      DiscordBackend::loginError()            const { return m_loginError; }
 
 // ─────────────────────────────────────────────────────────────
 // QML-invokable actions
@@ -54,6 +55,8 @@ void DiscordBackend::login(const QString& user, const QString& pass)
         return;
     }
     
+    setLoginError(""); // Clear previous error visually
+
     {
         QMutexLocker lock(&m_queueMutex);
         m_pendingLogins.enqueue({user.trimmed().toStdString(), pass.trimmed().toStdString()});
@@ -243,6 +246,13 @@ void DiscordBackend::markSpeakerActive(const std::string& uuid)
     emit _markSpeaker(QString::fromStdString(uuid));
 }
 
+void DiscordBackend::setLoginError(const QString& error)
+{
+    m_loginError = error;
+    emit loginErrorChanged();
+    notifyUiChanged();
+}
+
 // ─────────────────────────────────────────────────────────────
 // Output queue dequeue
 // ─────────────────────────────────────────────────────────────
@@ -405,6 +415,7 @@ void DiscordBackend::confirmLogin(const std::string& username)
 {
     m_username = QString::fromStdString(username);
     m_isLoggedIn.store(true);
+    setLoginError(""); // Clear any leftover errors
     emit usernameChanged();
     emit isLoggedInChanged();
     notifyUiChanged();

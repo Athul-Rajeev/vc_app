@@ -379,7 +379,7 @@ bool TailscaleNetwork::connectPersistentTcp(const std::string& targetIp, std::fu
         }
 
         spdlog::trace("Resolving persistent TCP target {}:{}", ip, port);
-        auto endpoints = resolver.resolve(ip, port);
+        auto endpoints = resolver.resolve(asio::ip::tcp::v4(), ip, port);
         asio::ip::tcp::socket socket(m_tcpContext);
         
         // Synchronous connect just for the initial handshake, then we hand it to the async session
