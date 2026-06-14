@@ -22,14 +22,50 @@ DiscordBackend::DiscordBackend(QObject* parent)
     connect(this, &DiscordBackend::_setHistory,   this, &DiscordBackend::onSetHistory,   Qt::QueuedConnection);
     connect(this, &DiscordBackend::_setPeers,     this, &DiscordBackend::onSetPeers,     Qt::QueuedConnection);
     connect(this, &DiscordBackend::_markSpeaker,  this, &DiscordBackend::onMarkSpeaker,  Qt::QueuedConnection);
+    connect(this, &DiscordBackend::_setLoginError, this, &DiscordBackend::onSetLoginError, Qt::QueuedConnection);
+    connect(this, &DiscordBackend::_confirmLogin,  this, &DiscordBackend::onConfirmLogin,  Qt::QueuedConnection);
+    connect(this, &DiscordBackend::_confirmLogout, this, &DiscordBackend::onConfirmLogout, Qt::QueuedConnection);
 
-    m_speakerTimer = new QTimer(this);
-    m_speakerTimer->setInterval(50);
-    connect(m_speakerTimer, &QTimer::timeout, this, &DiscordBackend::onSpeakerDecay);
-    m_speakerTimer->start();
+
+    m_decayTimer = new QTimer(this);
+    m_decayTimer->setSingleShot(true);
+    connect(m_decayTimer, &QTimer::timeout, this, &DiscordBackend::onSpeakerDecay);
 }
 
 DiscordBackend::~DiscordBackend() = default;
+
+void DiscordBackend::scheduleDecayCheck()
+{
+    m_decayTimer->stop();
+    if (m_speakerTimestamps.isEmpty()) return;
+
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 earliest = std::numeric_limits<qint64>::max();
+    for (auto it = m_speakerTimestamps.begin(); it != m_speakerTimestamps.end(); ++it)
+    {
+        qint64 expire = it.value() + kSpeakerMs;
+        if (expire <= now)
+        {
+            // already expired, will be cleaned in the next slot call
+            earliest = now; // trigger immediate timeout
+            break;
+        }
+        else if (expire < earliest)
+        {
+            earliest = expire;
+        }
+    }
+
+    if (earliest <= now)
+    {
+        // Immediate decay needed; fire now.
+        m_decayTimer->start(0);
+    }
+    else if (earliest < std::numeric_limits<qint64>::max())
+    {
+        m_decayTimer->start(static_cast<int>(earliest - now));
+    }
+}
 
 // ─────────────────────────────────────────────────────────────
 // Property reads
@@ -113,6 +149,8 @@ void DiscordBackend::leaveVoiceChannel()
 {
     m_activeVoiceChannelId.store(-1);
     emit activeVoiceChannelIdChanged();
+    m_speakerTimestamps.clear();   // no more speakers
+    m_decayTimer->stop();
     rebuildVoiceChannelsWithPeers();
     notifyUiChanged();
 }
@@ -243,14 +281,17 @@ void DiscordBackend::setVoicePeers(const std::vector<std::string>& peerDataList)
 
 void DiscordBackend::markSpeakerActive(const std::string& uuid)
 {
-    emit _markSpeaker(QString::fromStdString(uuid));
+    QString qUuid = QString::fromStdString(uuid);
+    // No need to check m_activeVoiceChannelId because we only care about timestamps
+    // The scheduleDecayCheck will handle rest
+    m_speakerTimestamps[qUuid] = QDateTime::currentMSecsSinceEpoch();
+    scheduleDecayCheck(); // re‑evaluate earliest timeout
+    rebuildVoiceChannelsWithPeers(); // immediate UI update (speaking indicator on)
 }
 
 void DiscordBackend::setLoginError(const QString& error)
 {
-    m_loginError = error;
-    emit loginErrorChanged();
-    notifyUiChanged();
+    emit _setLoginError(error);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -337,15 +378,25 @@ void DiscordBackend::onSpeakerDecay()
 {
     qint64 now = QDateTime::currentMSecsSinceEpoch();
     bool changed = false;
-    for (auto it = m_speakerTimestamps.begin(); it != m_speakerTimestamps.end(); ) {
-        if (now - it.value() > kSpeakerMs) {
+    auto it = m_speakerTimestamps.begin();
+    while (it != m_speakerTimestamps.end())
+    {
+        if (now - it.value() >= kSpeakerMs)
+        {
             it = m_speakerTimestamps.erase(it);
             changed = true;
-        } else {
+        }
+        else
+        {
             ++it;
         }
     }
-    if (changed) rebuildVoiceChannelsWithPeers();
+    if (changed)
+    {
+        rebuildVoiceChannelsWithPeers();
+    }
+    // Re‑schedule for next expiration (if any)
+    scheduleDecayCheck();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -413,17 +464,33 @@ void DiscordBackend::notifyUiChanged()
 
 void DiscordBackend::confirmLogin(const std::string& username)
 {
-    m_username = QString::fromStdString(username);
+    emit _confirmLogin(QString::fromStdString(username));
+}
+
+void DiscordBackend::confirmLogout()
+{
+    emit _confirmLogout();
+}
+
+void DiscordBackend::onSetLoginError(QString error)
+{
+    m_loginError = error;
+    emit loginErrorChanged();
+    notifyUiChanged();
+}
+
+void DiscordBackend::onConfirmLogin(QString username)
+{
+    m_username = username;
     m_isLoggedIn.store(true);
-    setLoginError(""); // Clear any leftover errors
     emit usernameChanged();
     emit isLoggedInChanged();
     notifyUiChanged();
 }
 
-void DiscordBackend::confirmLogout()
+void DiscordBackend::onConfirmLogout()
 {
-    m_username = "";
+    m_username.clear();
     m_isLoggedIn.store(false);
     emit usernameChanged();
     emit isLoggedInChanged();

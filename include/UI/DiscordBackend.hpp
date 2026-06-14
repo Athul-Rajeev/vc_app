@@ -122,6 +122,11 @@ signals:
     void _setPeers(QVariantList peers);
     void _markSpeaker(QString uuid);
 
+    // Internal queued signals for thread‑safe state updates
+    void _setLoginError(QString error);
+    void _confirmLogin(QString username);
+    void _confirmLogout();
+
 private slots:
     void onSetChannels(QVariantList text, QVariantList voice);
     void onAppendMessage(QVariantMap msg);
@@ -129,9 +134,13 @@ private slots:
     void onSetPeers(QVariantList peers);
     void onMarkSpeaker(QString uuid);
     void onSpeakerDecay();
+    void onSetLoginError(QString error);
+    void onConfirmLogin(QString username);
+    void onConfirmLogout();
 
 private:
     void rebuildVoiceChannelsWithPeers();
+    void scheduleDecayCheck();
     static QVariantMap parsePeerEntry(const QString& entry);
 
     // ── State (main-thread read, atomic write) ──────────────────
@@ -160,7 +169,7 @@ private:
 
     bool m_pendingLogout{false};
 
-    QTimer* m_speakerTimer = nullptr;
+    QTimer* m_decayTimer;
 
     static constexpr qint64 kSpeakerMs = 300;
     static constexpr char   kSettingsFile[] = "voicechat_user.cfg";
