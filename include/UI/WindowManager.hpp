@@ -34,7 +34,11 @@ public:
     std::string getPendingNewTextChannel();
     std::string getPendingNewVoiceChannel();
     bool getPendingLogin(std::string& outUser, std::string& outPass);
+    bool getPendingRegistration(std::string& outUser, std::string& outPass);
     bool getPendingLogout();
+
+    /// Current RMS threshold for voice activation (idempotently applied by the control loop).
+    double getVoiceActivationThreshold() const;
 
     void confirmLogin(const std::string& username);
     void confirmLogout();

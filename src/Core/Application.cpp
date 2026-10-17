@@ -8,6 +8,30 @@
 static constexpr int serverHeartbeatTimeoutMs = 45000;
 static constexpr int heartbeatIntervalMs = serverHeartbeatTimeoutMs - 3750;
 
+/// Server-side boundary check for user-submitted names. Wire payloads are '|'-delimited
+/// and parsed with ':' and "=,"-style separators (see CONTEXT.md §5), so those characters
+/// (and control characters) must never reach the protocol.
+static constexpr int kMaxUsernameLength = 32;
+
+static bool isValidDisplayName(const std::string& name)
+{
+    if (name.empty() || static_cast<int>(name.size()) > kMaxUsernameLength)
+    {
+        return false;
+    }
+
+    for (unsigned char character : name)
+    {
+        if (character == '|' || character == ':' || character == '=' || character == ',' ||
+            character == '\n' || character == '\r' || character < 0x20)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 Application::Application()
 {
     m_isRunning = false;
@@ -218,7 +242,45 @@ void Application::serverControlLoop()
         m_networkManager.broadcastTcp(peersPayload);
     };
 
-    auto tcpHandler = [this, &clientMap, &broadcastGlobalVoiceState](const std::string& incomingIp, const std::string& payload) -> std::string
+    // Shared completion path for LOGIN / REGISTER / AUTH_SESSION: registers the client
+    // profile, seeds the UDP routing endpoint, and broadcasts the new global voice state.
+    auto completeAuthentication = [this, &clientMap, &broadcastGlobalVoiceState](
+                                    const std::string& accountUuid,
+                                    const std::string& username,
+                                    const std::string& incomingIp,
+                                    const std::string& clientUdpPort)
+    {
+        ClientProfile profile;
+        profile.username = username;
+        profile.activeChannelId = -1;
+        profile.isMuted = false;
+        profile.isDeafened = false;
+        std::string rawIp = incomingIp.substr(0, incomingIp.find(':'));
+        profile.latestUdpEndpoint = rawIp + ":" + (clientUdpPort.empty() ? "50000" : clientUdpPort);
+
+        clientMap[accountUuid] = profile;
+        spdlog::info("User authenticated: {} with UUID: {}", username, accountUuid);
+
+        // Register endpoint immediately
+        PeerRoutingState routingUpdate;
+        std::strncpy(routingUpdate.uuid, accountUuid.c_str(), uuidLen);
+        std::strncpy(routingUpdate.endpoint, profile.latestUdpEndpoint.c_str(), 64);
+        routingUpdate.activeChannelId = profile.activeChannelId;
+        m_routingQueue.forcePush(routingUpdate);
+
+        broadcastGlobalVoiceState();
+    };
+
+    // Issues a fresh session row for an authenticated account and returns the raw token.
+    auto createSessionForAccount = [this](const std::string& accountUuid) -> std::string
+    {
+        std::string sessionToken = Utils::generateRandomUUID();
+        std::string tokenHash = Utils::hashString(sessionToken);
+        m_dbManager->createSession(Utils::generateRandomUUID(), accountUuid, tokenHash);
+        return sessionToken;
+    };
+
+    auto tcpHandler = [this, &clientMap, &broadcastGlobalVoiceState, &completeAuthentication, &createSessionForAccount](const std::string& incomingIp, const std::string& payload) -> std::string
     {
         TcpPayload parsedRequest = parseTcpPayload(payload);
         spdlog::trace("TCP Handler received message of type: {} from UUID: {}", parsedRequest.messageType, parsedRequest.senderUuid);
@@ -236,57 +298,60 @@ void Application::serverControlLoop()
             std::getline(dataStream, password, '|');
             std::getline(dataStream, clientUdpPort);
 
+            // LOGIN must never create an account — registration happens only via REGISTER,
+            // so a typo'd username fails loudly instead of silently claiming a new account.
             AccountInfo account;
-            bool accountExists = m_dbManager->getAccountByUsername(username, account);
-            std::string activeUuid;
-
-            if (!accountExists)
+            if (!m_dbManager->getAccountByUsername(username, account))
             {
-                spdlog::info("Account not found. Auto-registering new user: {}", username);
-                std::string salt = Utils::generateSalt();
-                std::string hash = Utils::hashPassword(password, salt);
-                activeUuid = Utils::generateRandomUUID();
-                if (!m_dbManager->createAccount(activeUuid, username, hash, salt))
-                {
-                    return "AUTH_FAILED|Registration failed";
-                }
-            }
-            else
-            {
-                std::string hash = Utils::hashPassword(password, account.passwordSalt);
-                if (hash != account.passwordHash)
-                {
-                    spdlog::warn("Invalid password for user: {}", username);
-                    return "AUTH_FAILED|Invalid password";
-                }
-                activeUuid = account.accountUuid;
+                spdlog::warn("Login attempted for unknown account: {}", username);
+                return "AUTH_FAILED|No account with that username";
             }
 
-            std::string sessionToken = Utils::generateRandomUUID();
-            std::string tokenHash = Utils::hashString(sessionToken);
-            m_dbManager->createSession(Utils::generateRandomUUID(), activeUuid, tokenHash);
+            std::string hash = Utils::hashPassword(password, account.passwordSalt);
+            if (hash != account.passwordHash)
+            {
+                spdlog::warn("Invalid password for user: {}", username);
+                return "AUTH_FAILED|Invalid password";
+            }
 
-            ClientProfile profile;
-            profile.username = username;
-            profile.activeChannelId = -1;
-            profile.isMuted = false;
-            profile.isDeafened = false;
-            std::string rawIp = incomingIp.substr(0, incomingIp.find(':'));
-            profile.latestUdpEndpoint = rawIp + ":" + (clientUdpPort.empty() ? "50000" : clientUdpPort);
-            
-            clientMap[activeUuid] = profile;
-            spdlog::info("User authenticated: {} with UUID: {}", username, activeUuid);
+            std::string sessionToken = createSessionForAccount(account.accountUuid);
+            completeAuthentication(account.accountUuid, username, incomingIp, clientUdpPort);
 
-            // Register endpoint immediately
-            PeerRoutingState routingUpdate;
-            std::strncpy(routingUpdate.uuid, activeUuid.c_str(), uuidLen);
-            std::strncpy(routingUpdate.endpoint, profile.latestUdpEndpoint.c_str(), 64);
-            routingUpdate.activeChannelId = profile.activeChannelId;
-            m_routingQueue.forcePush(routingUpdate);
+            return "AUTH_SUCCESS|" + account.accountUuid + "|" + sessionToken + "|" + username;
+        }
+        else if (parsedRequest.messageType == "REGISTER")
+        {
+            std::string username, password, clientUdpPort;
+            std::getline(dataStream, username, '|');
+            std::getline(dataStream, password, '|');
+            std::getline(dataStream, clientUdpPort);
 
-            broadcastGlobalVoiceState();
+            if (!isValidDisplayName(username))
+            {
+                return "AUTH_FAILED|Invalid username";
+            }
 
-            return "AUTH_SUCCESS|" + activeUuid + "|" + sessionToken + "|" + username;
+            AccountInfo existingAccount;
+            if (m_dbManager->getAccountByUsername(username, existingAccount))
+            {
+                spdlog::warn("Registration rejected, username already taken: {}", username);
+                return "AUTH_FAILED|Username is already taken";
+            }
+
+            std::string salt = Utils::generateSalt();
+            std::string hash = Utils::hashPassword(password, salt);
+            std::string accountUuid = Utils::generateRandomUUID();
+            if (!m_dbManager->createAccount(accountUuid, username, hash, salt))
+            {
+                return "AUTH_FAILED|Registration failed";
+            }
+
+            spdlog::info("Registered new account: {} with UUID: {}", username, accountUuid);
+
+            std::string sessionToken = createSessionForAccount(accountUuid);
+            completeAuthentication(accountUuid, username, incomingIp, clientUdpPort);
+
+            return "AUTH_SUCCESS|" + accountUuid + "|" + sessionToken + "|" + username;
         }
         else if (parsedRequest.messageType == "AUTH_SESSION")
         {
@@ -303,25 +368,7 @@ void Application::serverControlLoop()
                 return "AUTH_FAILED|Session expired";
             }
 
-            ClientProfile profile;
-            profile.username = account.username;
-            profile.activeChannelId = -1;
-            profile.isMuted = false;
-            profile.isDeafened = false;
-            std::string rawIp = incomingIp.substr(0, incomingIp.find(':'));
-            profile.latestUdpEndpoint = rawIp + ":" + (clientUdpPort.empty() ? "50000" : clientUdpPort);
-            
-            clientMap[account.accountUuid] = profile;
-            spdlog::info("User session restored: {}", account.username);
-
-            // Register endpoint immediately
-            PeerRoutingState routingUpdate;
-            std::strncpy(routingUpdate.uuid, account.accountUuid.c_str(), uuidLen);
-            std::strncpy(routingUpdate.endpoint, profile.latestUdpEndpoint.c_str(), 64);
-            routingUpdate.activeChannelId = profile.activeChannelId;
-            m_routingQueue.forcePush(routingUpdate);
-
-            broadcastGlobalVoiceState();
+            completeAuthentication(account.accountUuid, account.username, incomingIp, clientUdpPort);
 
             return "AUTH_SUCCESS|" + account.accountUuid + "|" + sessionToken + "|" + account.username;
         }
@@ -491,6 +538,9 @@ void Application::clientControlLoop(const std::string& serverIp)
 
 void Application::processActiveClientState(const std::string& serverIp, std::chrono::steady_clock::time_point& lastHeartbeatTime, const std::function<void(const std::string&)>& pushHandler)
 {
+    // Idempotent settings sync: cheap reads, applied every wake so a changed
+    // slider value (or one loaded at startup) always reaches the audio engine.
+    m_audioEngine.setVoiceActivationThreshold(m_windowManager.getVoiceActivationThreshold());
 
     std::string currentUuid;
     {
@@ -510,9 +560,10 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
         std::string savedToken = Utils::getSavedSessionToken();
         std::string pendingUser, pendingPass;
         bool hasManualLogin = m_windowManager.getPendingLogin(pendingUser, pendingPass);
+        bool hasPendingRegistration = m_windowManager.getPendingRegistration(pendingUser, pendingPass);
 
         // DO NOT connect to TCP unless we actually have credentials or a token to send
-        if (savedToken.empty() && !hasManualLogin)
+        if (savedToken.empty() && !hasManualLogin && !hasPendingRegistration)
         {
             return; 
         }
@@ -527,9 +578,14 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
 
         int localAudioPort = m_networkManager.getLocalUdpPort();
 
-        if (hasManualLogin)
+        if (hasPendingRegistration)
         {
-            spdlog::info("Attempting login/registration for user: {}", pendingUser);
+            spdlog::info("Registering new account for user: {}", pendingUser);
+            m_networkManager.sendPersistentTcp("REGISTER||" + pendingUser + "|" + pendingPass + "|" + std::to_string(localAudioPort));
+        }
+        else if (hasManualLogin)
+        {
+            spdlog::info("Attempting login for user: {}", pendingUser);
             m_networkManager.sendPersistentTcp("LOGIN||" + pendingUser + "|" + pendingPass + "|" + std::to_string(localAudioPort));
         }
         else

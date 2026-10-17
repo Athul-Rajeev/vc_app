@@ -13,6 +13,7 @@
     <file>PanelButton.qml</file>
     <file>EmojiPicker.qml</file>
     <file>AddChannelDialog.qml</file>
+    <file>SettingsModal.qml</file>
     <file>LoginOverlay.qml</file>
     <file>fonts/GoogleSans-Regular.ttf</file>
 </qresource>

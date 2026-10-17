@@ -246,7 +246,7 @@ Rectangle {
                 spacing: 0
                 PanelButton { iconName: backend.isMuted ? "mic-off" : "mic"; btnTooltip: backend.isMuted ? "Unmute" : "Mute"; isActive: backend.isMuted; onClicked: backend.toggleMute() }
                 PanelButton { iconName: backend.isDeafened ? "headphone-off" : "headphone"; btnTooltip: backend.isDeafened ? "Undeafen" : "Deafen"; isActive: backend.isDeafened; onClicked: backend.toggleDeafen() }
-                PanelButton { iconName: "settings"; btnTooltip: "User Settings"; onClicked: {} }
+                PanelButton { iconName: "settings"; btnTooltip: "User Settings"; isActive: settingsModal.visible; onClicked: if (backend.isLoggedIn) settingsModal.open() }
             }
         }
     }

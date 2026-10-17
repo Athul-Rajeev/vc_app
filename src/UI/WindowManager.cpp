@@ -125,8 +125,21 @@ std::string WindowManager::getPendingNewVoiceChannel()
 bool WindowManager::getPendingLogin(std::string& outUser, std::string& outPass)
 {
     if (!m_backend) return false;
-    LoginRequest req;
+    AuthRequest req;
     if (m_backend->dequeuePendingLogin(req))
+    {
+        outUser = req.username;
+        outPass = req.password;
+        return true;
+    }
+    return false;
+}
+
+bool WindowManager::getPendingRegistration(std::string& outUser, std::string& outPass)
+{
+    if (!m_backend) return false;
+    AuthRequest req;
+    if (m_backend->dequeuePendingRegistration(req))
     {
         outUser = req.username;
         outPass = req.password;
@@ -138,6 +151,11 @@ bool WindowManager::getPendingLogin(std::string& outUser, std::string& outPass)
 bool WindowManager::getPendingLogout()
 {
     return m_backend && m_backend->dequeuePendingLogout();
+}
+
+double WindowManager::getVoiceActivationThreshold() const
+{
+    return m_backend ? m_backend->voiceActivationThreshold() : 0.015;
 }
 
 // ─────────────────────────────────────────────────────────────

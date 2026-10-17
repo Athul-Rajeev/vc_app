@@ -36,5 +36,6 @@ ApplicationWindow {
 
     EmojiPicker { id: emojiPicker; visible: false }
     AddChannelDialog { id: addChannelDialog; visible: false }
+    SettingsModal { id: settingsModal; visible: false }
     LoginOverlay { id: loginOverlay; visible: !backend.isLoggedIn || opacity > 0 }
 }

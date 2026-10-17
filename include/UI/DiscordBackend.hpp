@@ -29,7 +29,8 @@
  * All Q_PROPERTYs are read from the main thread by QML.
  */
 
- struct LoginRequest
+/// Credentials submitted by the login or registration screen; shared shape.
+struct AuthRequest
 {
     std::string username;
     std::string password;
@@ -42,7 +43,7 @@ class DiscordBackend : public QObject
 
     Q_OBJECT
 
-    Q_PROPERTY(QString  username             READ username             NOTIFY usernameChanged)
+    Q_PROPERTY(QString      username             READ username             NOTIFY usernameChanged)
     Q_PROPERTY(bool     isLoggedIn           READ isLoggedIn           NOTIFY isLoggedInChanged)
     Q_PROPERTY(bool     isMuted              READ isMuted              NOTIFY isMutedChanged)
     Q_PROPERTY(bool     isDeafened           READ isDeafened           NOTIFY isDeafenedChanged)
@@ -52,6 +53,7 @@ class DiscordBackend : public QObject
     Q_PROPERTY(QVariantList voiceChannels    READ voiceChannels        NOTIFY voiceChannelsChanged)
     Q_PROPERTY(QVariantList chatMessages     READ chatMessages         NOTIFY chatMessagesChanged)
     Q_PROPERTY(QString      loginError       READ loginError           NOTIFY loginErrorChanged)
+    Q_PROPERTY(int      voiceActivationSensitivity READ voiceActivationSensitivity NOTIFY voiceActivationSensitivityChanged)
 
 public:
     explicit DiscordBackend(QObject* parent = nullptr);
@@ -68,9 +70,16 @@ public:
     QVariantList voiceChannels()         const;
     QVariantList chatMessages()          const;
     QString      loginError()            const;
+    int          voiceActivationSensitivity() const;
+
+    /// RMS threshold for the AudioEngine's VAD, derived from the 0–100 sensitivity scale.
+    double voiceActivationThreshold() const;
 
     // ── QML-invokable actions ───────────────────────────────────
-    Q_INVOKABLE void login(const QString& user, const QString& pass);    Q_INVOKABLE void sendMessage(const QString& text);
+    Q_INVOKABLE void login(const QString& user, const QString& pass);
+    Q_INVOKABLE void registerAccount(const QString& user, const QString& pass, const QString& confirmPass);
+    Q_INVOKABLE void clearLoginError();
+    Q_INVOKABLE void sendMessage(const QString& text);
     Q_INVOKABLE void logout();
     Q_INVOKABLE void toggleMute();
     Q_INVOKABLE void toggleDeafen();
@@ -79,6 +88,7 @@ public:
     Q_INVOKABLE void selectTextChannel(int channelId);
     Q_INVOKABLE void requestNewTextChannel(const QString& name);
     Q_INVOKABLE void requestNewVoiceChannel(const QString& name);
+    Q_INVOKABLE void setVoiceActivationSensitivity(int sensitivity);
     Q_INVOKABLE QString avatarColor(const QString& name) const;
     Q_INVOKABLE QString channelNameForId(int id) const;
 
@@ -99,7 +109,8 @@ public:
     std::string dequeuePendingMessage();
     std::string dequeuePendingTextChannel();
     std::string dequeuePendingVoiceChannel();
-    bool dequeuePendingLogin(LoginRequest& outRequest);
+    bool dequeuePendingLogin(AuthRequest& outRequest);
+    bool dequeuePendingRegistration(AuthRequest& outRequest);
     bool dequeuePendingLogout();
 
 signals:
@@ -114,6 +125,7 @@ signals:
     void chatMessagesChanged();
     void requestScrollToBottom();
     void loginErrorChanged();
+    void voiceActivationSensitivityChanged();
 
     // Internal cross-thread relay signals
     void _setChannels(QVariantList text, QVariantList voice);
@@ -141,6 +153,8 @@ private slots:
 private:
     void rebuildVoiceChannelsWithPeers();
     void scheduleDecayCheck();
+    void loadSettingsFromFile();
+    void saveSettingsToFile();
     static QVariantMap parsePeerEntry(const QString& entry);
 
     // ── State (main-thread read, atomic write) ──────────────────
@@ -151,6 +165,7 @@ private:
     std::atomic<bool> m_isDeafened           {false};
     std::atomic<int>  m_selectedTextChannelId {1};
     std::atomic<int>  m_activeVoiceChannelId  {-1};
+    std::atomic<int>  m_voiceActivationSensitivity {kDefaultVoiceActivationSensitivity};
 
     // ── Model data (main-thread only) ───────────────────────────
     QVariantList m_textChannels;
@@ -162,7 +177,8 @@ private:
 
     // ── Output queues (guarded by m_queueMutex) ─────────────────
     mutable QMutex m_queueMutex;
-    QQueue<LoginRequest> m_pendingLogins;
+    QQueue<AuthRequest> m_pendingLogins;
+    QQueue<AuthRequest> m_pendingRegistrations;
     QQueue<QString> m_pendingMessages;
     QQueue<QString> m_pendingTextChannels;
     QQueue<QString> m_pendingVoiceChannels;
@@ -173,6 +189,8 @@ private:
 
     static constexpr qint64 kSpeakerMs = 300;
     static constexpr char   kSettingsFile[] = "voicechat_user.cfg";
+    static constexpr int    kDefaultVoiceActivationSensitivity = 41;  ///< Maps to ~0.015 RMS
+    static constexpr int    kMaxVoiceActivationSensitivity = 100;
 
     static const QStringList kAvatarColors;
 };

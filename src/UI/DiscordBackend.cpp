@@ -6,8 +6,49 @@
 #include <QRegularExpression>
 #include <QFileInfo>
 #include <QDate>
+#include <QFile>
+#include <QTextStream>
+#include <algorithm>
+#include <cmath>
 
 const QStringList DiscordBackend::kAvatarColors = { "#5865F2", "#57F287", "#FEE75C", "#EB459E", "#ED4245", "#3498DB", "#E67E22", "#2ECC71", "#9B59B6", "#1ABC9C", "#E91E63", "#FF5722", "#009688", "#673AB7", "#FF9800" };
+
+/// Client-side boundary check for credentials. The wire payloads are '|'-delimited
+/// (see CONTEXT.md §5), so these characters must never reach the protocol.
+/// Returns an empty string when the credentials are acceptable, otherwise the error message.
+static QString validateCredentials(const QString& user, const QString& pass)
+{
+    const QString forbiddenCharacters = QStringLiteral("|:=,");
+
+    if (user.isEmpty())
+    {
+        return "Please enter a username.";
+    }
+    if (user.length() > 32)
+    {
+        return "Username must be 32 characters or fewer.";
+    }
+    for (const QChar& character : user)
+    {
+        if (forbiddenCharacters.contains(character) || character.isSpace() || character.category() == QChar::Other_Control)
+        {
+            return "Username may not contain spaces or the characters " + forbiddenCharacters + ".";
+        }
+    }
+    if (pass.isEmpty())
+    {
+        return "Please enter a password.";
+    }
+    if (pass.length() > 128)
+    {
+        return "Password must be 128 characters or fewer.";
+    }
+    if (pass.contains('|'))
+    {
+        return "Password may not contain the '|' character.";
+    }
+    return "";
+}
 
 DiscordBackend::DiscordBackend(QObject* parent)
     : QObject(parent)
@@ -24,6 +65,8 @@ DiscordBackend::DiscordBackend(QObject* parent)
     m_decayTimer = new QTimer(this);
     m_decayTimer->setSingleShot(true);
     connect(m_decayTimer, &QTimer::timeout, this, &DiscordBackend::onSpeakerDecay);
+
+    loadSettingsFromFile();
 }
 
 DiscordBackend::~DiscordBackend() = default;
@@ -72,19 +115,54 @@ QVariantList DiscordBackend::textChannels()          const { return m_textChanne
 QVariantList DiscordBackend::voiceChannels()         const { return m_voiceChannels; }
 QVariantList DiscordBackend::chatMessages()          const { return m_chatMessages; }
 QString      DiscordBackend::loginError()            const { return m_loginError; }
+int          DiscordBackend::voiceActivationSensitivity() const { return m_voiceActivationSensitivity.load(); }
+
+double DiscordBackend::voiceActivationThreshold() const
+{
+    // Logarithmic scale so slider steps feel even: 0 → 0.1 RMS (insensitive),
+    // 100 → 0.001 RMS (very sensitive). Default 41 ≈ the historical 0.015 threshold.
+    int sensitivity = m_voiceActivationSensitivity.load(std::memory_order_relaxed);
+    return 0.1 * std::pow(10.0, -sensitivity / 50.0);
+}
 
 void DiscordBackend::login(const QString& user, const QString& pass)
 {
-    if (user.trimmed().isEmpty() || pass.trimmed().isEmpty()) 
+    QString validationError = validateCredentials(user, pass);
+    if (!validationError.isEmpty())
     {
+        setLoginError(validationError);
         return;
     }
-    
-    setLoginError(""); 
+
+    setLoginError("");
 
     {
         QMutexLocker lock(&m_queueMutex);
-        m_pendingLogins.enqueue({user.trimmed().toStdString(), pass.trimmed().toStdString()});
+        m_pendingLogins.enqueue({user.trimmed().toStdString(), pass.toStdString()});
+    }
+    notifyUiChanged();
+}
+
+void DiscordBackend::registerAccount(const QString& user, const QString& pass, const QString& confirmPass)
+{
+    QString validationError = validateCredentials(user, pass);
+    if (!validationError.isEmpty())
+    {
+        setLoginError(validationError);
+        return;
+    }
+
+    if (pass != confirmPass)
+    {
+        setLoginError("Passwords do not match.");
+        return;
+    }
+
+    setLoginError("");
+
+    {
+        QMutexLocker lock(&m_queueMutex);
+        m_pendingRegistrations.enqueue({user.trimmed().toStdString(), pass.toStdString()});
     }
     notifyUiChanged();
 }
@@ -96,6 +174,11 @@ void DiscordBackend::logout()
         m_pendingLogout = true;
     }
     notifyUiChanged();
+}
+
+void DiscordBackend::clearLoginError()
+{
+    setLoginError("");
 }
 
 void DiscordBackend::sendMessage(const QString& text)
@@ -182,6 +265,19 @@ void DiscordBackend::requestNewVoiceChannel(const QString& name)
         m_pendingVoiceChannels.enqueue(name.trimmed());
     }
     notifyUiChanged();
+}
+
+void DiscordBackend::setVoiceActivationSensitivity(int sensitivity)
+{
+    int clampedSensitivity = std::clamp(sensitivity, 0, kMaxVoiceActivationSensitivity);
+    if (clampedSensitivity == m_voiceActivationSensitivity.load())
+    {
+        return;
+    }
+
+    m_voiceActivationSensitivity.store(clampedSensitivity);
+    emit voiceActivationSensitivityChanged();
+    saveSettingsToFile();
 }
 
 QString DiscordBackend::avatarColor(const QString& name) const
@@ -364,12 +460,23 @@ std::string DiscordBackend::dequeuePendingVoiceChannel()
     return m_pendingVoiceChannels.isEmpty() ? "" : m_pendingVoiceChannels.dequeue().toStdString();
 }
 
-bool DiscordBackend::dequeuePendingLogin(LoginRequest& outRequest)
+bool DiscordBackend::dequeuePendingLogin(AuthRequest& outRequest)
 {
     QMutexLocker lock(&m_queueMutex);
     if (!m_pendingLogins.isEmpty())
     {
         outRequest = m_pendingLogins.dequeue();
+        return true;
+    }
+    return false;
+}
+
+bool DiscordBackend::dequeuePendingRegistration(AuthRequest& outRequest)
+{
+    QMutexLocker lock(&m_queueMutex);
+    if (!m_pendingRegistrations.isEmpty())
+    {
+        outRequest = m_pendingRegistrations.dequeue();
         return true;
     }
     return false;
@@ -510,6 +617,53 @@ QVariantMap DiscordBackend::parsePeerEntry(const QString& entry)
 void DiscordBackend::setNotifyCallback(std::function<void()> cb)
 {
     m_uiCallback = std::move(cb);
+}
+
+void DiscordBackend::loadSettingsFromFile()
+{
+    QFile settingsFile(kSettingsFile);
+    if (!settingsFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        return;   // No saved settings yet — defaults apply.
+    }
+
+    // Simple "key=value" lines; the file is written by saveSettingsToFile().
+    QTextStream streamIn(&settingsFile);
+    while (!streamIn.atEnd())
+    {
+        QString line = streamIn.readLine();
+        int separatorIndex = line.indexOf('=');
+        if (separatorIndex <= 0)
+        {
+            continue;
+        }
+
+        QString key = line.left(separatorIndex);
+        QString value = line.mid(separatorIndex + 1);
+
+        if (key == "voiceActivationSensitivity")
+        {
+            bool parsedOk = false;
+            int sensitivity = value.toInt(&parsedOk);
+            if (parsedOk)
+            {
+                m_voiceActivationSensitivity.store(std::clamp(sensitivity, 0, kMaxVoiceActivationSensitivity));
+            }
+        }
+    }
+}
+
+void DiscordBackend::saveSettingsToFile()
+{
+    QFile settingsFile(kSettingsFile);
+    if (!settingsFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
+    {
+        qWarning() << "[BACKEND] Could not write settings file:" << kSettingsFile;
+        return;
+    }
+
+    QTextStream streamOut(&settingsFile);
+    streamOut << "voiceActivationSensitivity=" << m_voiceActivationSensitivity.load() << "\n";
 }
 
 void DiscordBackend::notifyUiChanged()
