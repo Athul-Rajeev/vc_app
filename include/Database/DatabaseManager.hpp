@@ -22,7 +22,7 @@ struct ChatMessage
     std::string uuid;
     std::string username;
     std::string message;
-    std::string timestamp;
+    long long timestamp;       // Unix epoch in milliseconds
 };
 
 struct Channel

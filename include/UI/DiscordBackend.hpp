@@ -88,8 +88,8 @@ public:
     // ── Thread-safe setters (call from any thread) ─────────────
     void setChannels(const std::vector<std::pair<int,std::string>>& text,
                      const std::vector<std::pair<int,std::string>>& voice);
-    void appendChatMessage(const std::string& message);
-    void setChatHistory(const std::vector<std::string>& messages);
+    void appendChatMessage(const std::string& message, qint64 timestampMs = 0);    
+    void setChatHistory(const std::vector<std::pair<std::string, qint64>>& messages);
     void setVoicePeers(const std::vector<std::string>& peerDataList);
     void markSpeakerActive(const std::string& uuid);
     void setNotifyCallback(std::function<void()> cb);

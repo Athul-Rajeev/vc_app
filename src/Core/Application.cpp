@@ -379,7 +379,9 @@ void Application::serverControlLoop()
                 m_dbManager->storeMessage(channelId, parsedRequest.senderUuid, username, message);
             }
 
-            m_networkManager.broadcastTcp("PUSH_CHAT|" + username + ": " + message);
+            long long nowEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+            m_networkManager.broadcastTcp("PUSH_CHAT|" + username + ": " + message + "|" + std::to_string(nowEpochMs));
             return "ACK";
         }
         else if (parsedRequest.messageType == "REQ_CHAT_LOG")
@@ -396,9 +398,10 @@ void Application::serverControlLoop()
                 auto history = m_dbManager->fetchLastMessages(channelId, 50);
                 for (const auto& chatMessage : history)
                 {
-                    chatResponse += chatMessage.username + ": " + chatMessage.message + "\n";
+                    chatResponse += chatMessage.username + ": " + chatMessage.message + "|" + std::to_string(chatMessage.timestamp) + "\n";
                 }
             }
+            spdlog::debug("CHAT_LOG line: {}", chatResponse);  // prints entire payload
             m_networkManager.sendTcpTo(parsedRequest.senderUuid, chatResponse); 
             return ""; 
         }
@@ -714,21 +717,59 @@ void Application::processClientTcpPush(const std::string& payload)
     }
     else if (payload.find("PUSH_CHAT|") == 0)
     {
-        std::string newMessage = payload.substr(10);
-        m_windowManager.appendChatMessage(newMessage);
+        std::string rawMsg = payload.substr(10);               // "username: message|epochMs"
+        std::string msgText;
+        long long epochMs = 0;
+
+        size_t pipePos = rawMsg.rfind('|');
+        if (pipePos != std::string::npos)
+        {
+            msgText = rawMsg.substr(0, pipePos);
+            try
+            {
+                epochMs = std::stoll(rawMsg.substr(pipePos + 1));
+            }
+            catch (...) { }
+        }
+        else
+        {
+            msgText = rawMsg;
+        }
+
+        m_windowManager.appendChatMessage(msgText, epochMs);
     }
     else if (payload.find("CHAT_LOG|") == 0)
     {
-        std::vector<std::string> chatHistory;
+        std::vector<std::pair<std::string, long long>> chatHistory;
         std::istringstream chatStream(payload.substr(9));
         std::string chatLine;
+
         while (std::getline(chatStream, chatLine, '\n'))
         {
-            if (!chatLine.empty())
+            if (chatLine.empty())
+                continue;
+
+            // Format: "username: message|epochMs"
+            size_t lastPipe = chatLine.rfind('|');
+            long long epochMs = 0;
+            std::string messageText = chatLine;
+
+            if (lastPipe != std::string::npos)
             {
-                chatHistory.push_back(chatLine);
+                try
+                {
+                    epochMs = std::stoll(chatLine.substr(lastPipe + 1));
+                }
+                catch (...)
+                {
+                    epochMs = 0; // fallback; backend will use current time
+                }
+                messageText = chatLine.substr(0, lastPipe);
             }
+
+            chatHistory.emplace_back(messageText, epochMs);
         }
+
         spdlog::debug("Received chat log with {} lines", chatHistory.size());
         m_windowManager.setChatHistory(chatHistory);
     }

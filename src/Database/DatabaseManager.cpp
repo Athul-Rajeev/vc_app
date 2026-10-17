@@ -48,7 +48,7 @@ bool DatabaseManager::initialize(const std::string& dbPath)
         "uuid TEXT, "
         "username TEXT, "
         "message TEXT, "
-        "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);";
+        "timestamp INTEGER NOT NULL DEFAULT 0);";
 
     const char* sqlCreateTextChannels = 
         "CREATE TABLE IF NOT EXISTS text_channels ("
@@ -75,6 +75,26 @@ bool DatabaseManager::initialize(const std::string& dbPath)
         "refresh_token_hash TEXT, "
         "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
         "expires_at DATETIME);";
+
+    // Migrate old human-readable timestamps if they exist
+    sqlite3_stmt* checkStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db,
+        "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='timestamp' AND type LIKE 'DATETIME%'",
+        -1, &checkStmt, nullptr) == SQLITE_OK)
+    {
+        if (sqlite3_step(checkStmt) == SQLITE_ROW && sqlite3_column_int(checkStmt, 0) > 0)
+        {
+            spdlog::info("Migrating old DATETIME timestamp column to integer epoch ms");
+            sqlite3_exec(m_db,
+                "UPDATE messages SET timestamp = CAST(strftime('%s', timestamp) AS INTEGER) * 1000 "
+                "WHERE timestamp > 0 AND typeof(timestamp) = 'text'",
+                nullptr, nullptr, nullptr);
+
+            // Make the column INTEGER permanently (SQLite doesn't enforce types,
+            // but we might want to drop/recreate to be clean – skip for simplicity)
+        }
+    }
+    if (checkStmt) sqlite3_finalize(checkStmt);
 
 
     char* errorMessage = nullptr;
@@ -183,7 +203,7 @@ void DatabaseManager::storeMessage(int channelId, const std::string& uuid, const
             }
 
             sqlite3_stmt* stmt;
-            const char* sqlInsert = "INSERT INTO messages (channel_id, uuid, username, message) VALUES (?, ?, ?, ?)";
+            const char* sqlInsert = "INSERT INTO messages (channel_id, uuid, username, message, timestamp) VALUES (?, ?, ?, ?, ?)";
             
             if (sqlite3_prepare_v2(m_db, sqlInsert, -1, &stmt, 0) == SQLITE_OK) 
             {
@@ -191,6 +211,9 @@ void DatabaseManager::storeMessage(int channelId, const std::string& uuid, const
                 sqlite3_bind_text(stmt, 2, uuid.c_str(), -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(stmt, 3, username.c_str(), -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(stmt, 4, message.c_str(), -1, SQLITE_TRANSIENT);
+
+                long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                sqlite3_bind_int64(stmt, 5, nowMs);
                 
                 if (sqlite3_step(stmt) != SQLITE_DONE) 
                 {
@@ -248,7 +271,7 @@ std::vector<ChatMessage> DatabaseManager::fetchLastMessages(int channelId, int l
             chatMessage.message = rawMessage ? reinterpret_cast<const char*>(rawMessage) : "";
             
             const unsigned char* rawTimestamp = sqlite3_column_text(stmt, 5);
-            chatMessage.timestamp = rawTimestamp ? reinterpret_cast<const char*>(rawTimestamp) : "";
+            chatMessage.timestamp = sqlite3_column_int64(stmt, 5);
             
             history.push_back(chatMessage);
         }

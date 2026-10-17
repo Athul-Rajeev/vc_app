@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QQuickWindow>
+#include <QQuickStyle>
 #include <cstring>
 
 // ─────────────────────────────────────────────────────────────
@@ -29,12 +30,15 @@ bool WindowManager::initialize()
 {
     if (m_initialized) return true;
 
-    if (!QCoreApplication::instance()) {
+    if (!QCoreApplication::instance()) 
+    {
         m_app = std::make_unique<QApplication>(m_argc, m_argv[0] ? m_argv : nullptr);
     }
 
     QApplication::setHighDpiScaleFactorRoundingPolicy(
         Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+
+    QQuickStyle::setStyle("Basic");
 
     m_backend = new DiscordBackend();
 
@@ -45,7 +49,8 @@ bool WindowManager::initialize()
     const QUrl url(QStringLiteral("qrc:/Main.qml"));
     m_engine->load(url);
 
-    if (m_engine->rootObjects().isEmpty()) {
+    if (m_engine->rootObjects().isEmpty()) 
+    {
         // If it fails here, Main.qml has a syntax error or the QRC file is wrong.
         delete m_backend;
         m_backend = nullptr;
@@ -145,14 +150,20 @@ void WindowManager::setChannels(
     if (m_backend) m_backend->setChannels(textChannels, voiceChannels);
 }
 
-void WindowManager::appendChatMessage(const std::string& message)
+void WindowManager::appendChatMessage(const std::string& message, long long timestampMs)
 {
-    if (m_backend) m_backend->appendChatMessage(message);
+    if (m_backend) m_backend->appendChatMessage(message, static_cast<qint64>(timestampMs));
 }
 
-void WindowManager::setChatHistory(const std::vector<std::string>& messages)
+void WindowManager::setChatHistory(const std::vector<std::pair<std::string, long long>>& messages)
 {
-    if (m_backend) m_backend->setChatHistory(messages);
+    if (m_backend)
+    {
+        std::vector<std::pair<std::string, qint64>> converted;
+        for (auto& p : messages)
+            converted.emplace_back(p.first, static_cast<qint64>(p.second));
+        m_backend->setChatHistory(converted);
+    }
 }
 
 void WindowManager::setVoicePeers(const std::vector<std::string>& peerDataList)

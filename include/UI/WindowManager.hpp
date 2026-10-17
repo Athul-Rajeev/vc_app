@@ -44,8 +44,8 @@ public:
     void setChannels(const std::vector<std::pair<int,std::string>>& textChannels,
                      const std::vector<std::pair<int,std::string>>& voiceChannels);
 
-    void appendChatMessage(const std::string& message);
-    void setChatHistory(const std::vector<std::string>& messages);
+    void appendChatMessage(const std::string& message, long long timestampMs = 0);
+    void setChatHistory(const std::vector<std::pair<std::string, long long>>& messages);
 
     /// Each entry: "username:isMuted(0|1):isDeafened(0|1):uuid:channelId"
     void setVoicePeers(const std::vector<std::string>& peerDataList);
