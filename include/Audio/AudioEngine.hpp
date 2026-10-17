@@ -32,6 +32,8 @@ public:
     void startStream();
     void stopStream();
 
+    void setVoiceActivationThreshold(double rmsThreshold);
+
     std::vector<uint8_t> getOutgoingPacket();
     std::vector<uint8_t> waitForOutgoingPacket(int timeoutMs);
     void pushIncomingPacket(const std::string& senderUuid, const std::vector<uint8_t>& opusPacket);
@@ -59,6 +61,7 @@ private:
     
     std::atomic<uint32_t> m_sequenceCounter;
     int m_vadHoldFrames;
+    std::atomic<double> m_voiceActivationThreshold{0.015};   ///< RMS level that arms the VAD; settable from UI thread
 
     std::mutex m_audioMutex;
     std::condition_variable m_audioCv;

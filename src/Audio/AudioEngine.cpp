@@ -56,6 +56,11 @@ bool AudioEngine::initialize()
     return true;
 }
 
+void AudioEngine::setVoiceActivationThreshold(double rmsThreshold)
+{
+    m_voiceActivationThreshold.store(rmsThreshold, std::memory_order_relaxed);
+}
+
 void AudioEngine::startStream()
 {
     if (!m_audioSystem.isStreamOpen())
@@ -132,7 +137,7 @@ int AudioEngine::processHardwareBuffers(int16_t* outputBuffer, const int16_t* in
         }
         double rootMeanSquare = std::sqrt(sumOfSquares / totalSamples);
 
-        double voiceActivationThreshold = 0.015;
+        double voiceActivationThreshold = m_voiceActivationThreshold.load(std::memory_order_relaxed);
         if (rootMeanSquare > voiceActivationThreshold)
         {
             m_vadHoldFrames = 25; 

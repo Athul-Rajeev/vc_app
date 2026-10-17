@@ -1,5 +1,20 @@
-<!DOCTYPE RCC><RCC version="1.0">
+<!DOCTYPE RCC>
+<RCC version="1.0">
 <qresource prefix="/">
     <file>Main.qml</file>
+    <file>ServerStrip.qml</file>
+    <file>Sidebar.qml</file>
+    <file>ChatArea.qml</file>
+    <file>MessageItem.qml</file>
+    <file>Icon.qml</file>
+    <file>ChannelRow.qml</file>
+    <file>VoicePeerRow.qml</file>
+    <file>SectionHeader.qml</file>
+    <file>PanelButton.qml</file>
+    <file>EmojiPicker.qml</file>
+    <file>AddChannelDialog.qml</file>
+    <file>SettingsModal.qml</file>
+    <file>LoginOverlay.qml</file>
+    <file>fonts/GoogleSans-Regular.ttf</file>
 </qresource>
 </RCC>
