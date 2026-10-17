@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include "Network/INetworkProvider.hpp"
 #include "Network/NetworkManager.hpp"
+#include "Security/LoginRateLimiter.hpp"
 #include "Audio/AudioEngine.hpp"
 #include "UI/WindowManager.hpp"
 #include "Core/ChannelState.hpp"
@@ -71,6 +72,7 @@ public:
 private:
     void processClientTcpPush(const std::string& payload);
     void serverControlLoop();
+    void serverConsoleLoop();
     void clientControlLoop(const std::string& serverIp);
     void processActiveClientState(const std::string& serverIp, std::chrono::steady_clock::time_point& lastHeartbeatTime, const std::function<void(const std::string&)>& pushHandler);
     void clientOutgoingAudioLoop(const std::string& serverIp);
@@ -88,6 +90,8 @@ private:
 
     std::mutex m_clientMutex;
     std::condition_variable m_clientCv;
+
+    LoginRateLimiter m_loginRateLimiter;   // Brute-force throttling for auth messages (server side)
 
     std::atomic<int> m_activeVoiceChannelId{-1};
     std::atomic<bool> m_isMuted{false};

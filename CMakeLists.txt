@@ -90,13 +90,16 @@ set(SOURCES
     src/Audio/PeerMixer.cpp
     src/UI/WindowManager.cpp
     src/UI/DiscordBackend.cpp
+    src/UI/ChatMessageModel.cpp
     src/Database/DatabaseManager.cpp
+    src/Security/LoginRateLimiter.cpp
     src/Utils/LoggerSetup.cpp
     third_party/sqlite3/sqlite3.c
     # ── Headers with Q_OBJECT must be listed here so AUTOMOC finds them.
     # AUTOMOC scans sources it knows about; headers in include/ are invisible
     # to it unless explicitly added. Only Q_OBJECT headers need to be listed.
     include/UI/DiscordBackend.hpp
+    include/UI/ChatMessageModel.hpp
     include/UI/WindowManager.hpp
 )
 
@@ -177,6 +180,7 @@ elseif(WIN32)
         Qt6::QuickControls2
         ws2_32
         wsock32
+        dwmapi
         rtaudio
         opus
     )

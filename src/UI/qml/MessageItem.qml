@@ -1,5 +1,9 @@
 import QtQuick
 
+/* One chat row: an optional day/time divider + either a full message
+   (avatar row) or a compact grouped continuation. Grouping/divider decisions
+   come precomputed from the ChatMessageModel (ShowDividerRole/IsGroupedRole);
+   the QML side stays a dumb renderer. */
 Item {
     id: root
     property string msgAuthor: ""
@@ -8,11 +12,14 @@ Item {
     property string msgAvatarColor: "#5865F2"
     property string msgAvatarLetter: "?"
     property bool isGrouped: false
+    property bool showTimeDivider: false
     property int msgListWidth: 600
 
-    height: isGrouped ? groupedContentHeight : fullContentHeight
     readonly property int fullContentHeight: fullRow.height + 4   // compact vertical padding
     readonly property int groupedContentHeight: groupedText.height + 2
+    readonly property int timeDividerHeight: showTimeDivider ? 28 : 0
+
+    height: timeDividerHeight + (isGrouped ? groupedContentHeight : fullContentHeight)
 
     // Hover background
     Rectangle {
@@ -21,12 +28,25 @@ Item {
         Behavior on color { ColorAnimation { duration: 50 } }
     }
 
+    // Day/time divider (pill between hairline rules)
+    Item {
+        id: timeDivider
+        visible: root.showTimeDivider
+        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+        height: root.timeDividerHeight
+        Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32; height: 1; color: "#3F4147"; anchors.horizontalCenter: parent.horizontalCenter }
+        Rectangle { anchors.centerIn: parent; width: timeDividerText.width + 16; height: 20; radius: 10; color: "#3F4147"
+            Text { id: timeDividerText; anchors.centerIn: parent; text: root.msgTimestamp; color: "#B5BAC1"; font.pixelSize: 11 }
+        }
+    }
+
     // Full message (with avatar)
     Row {
         id: fullRow
         visible: !isGrouped
         anchors.left: parent.left; anchors.right: parent.right
-        anchors.top: parent.top; anchors.leftMargin: 16; anchors.rightMargin: 16
+        anchors.top: showTimeDivider ? timeDivider.bottom : parent.top
+        anchors.leftMargin: 16; anchors.rightMargin: 16
         anchors.topMargin: 2
         spacing: 12
 
@@ -50,7 +70,8 @@ Item {
         id: groupedText
         visible: isGrouped
         anchors.left: parent.left; anchors.right: parent.right
-        anchors.leftMargin: 68; anchors.rightMargin: 16; anchors.top: parent.top
+        anchors.leftMargin: 68; anchors.rightMargin: 16
+        anchors.top: showTimeDivider ? timeDivider.bottom : parent.top
         anchors.topMargin: 1
         text: msgContent; color: "#DBDEE1"; font.pixelSize: 15; wrapMode: Text.WordWrap; lineHeight: 1.3
     }

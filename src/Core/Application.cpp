@@ -1,12 +1,18 @@
 // Application.cpp
 #include "Core/Application.hpp"
+#include "UI/DiscordBackend.hpp"
 #include "Network/INetworkProvider.hpp"
 #include "Utils/WavUtils.hpp"
+#include "Security/LoginRateLimiter.hpp"
 #include <spdlog/spdlog.h>
 #include <cstring>
+#include <iostream>
 
 static constexpr int serverHeartbeatTimeoutMs = 45000;
 static constexpr int heartbeatIntervalMs = serverHeartbeatTimeoutMs - 3750;
+
+// Chat history page size served per request (initial load and scroll-up paging).
+static constexpr int kChatHistoryPageSize = 50;
 
 /// Server-side boundary check for user-submitted names. Wire payloads are '|'-delimited
 /// and parsed with ':' and "=,"-style separators (see CONTEXT.md §5), so those characters
@@ -71,6 +77,10 @@ bool Application::initialize(bool isServerMode)
         {
             spdlog::info("Database initialized successfully");
         }
+
+        spdlog::info("Server console ready. Type 'help' for available commands.");
+        std::thread consoleThread([this]() { serverConsoleLoop(); });
+        consoleThread.detach();   // Reads stdin; ends naturally with the process.
         return true;
     }
 
@@ -213,10 +223,70 @@ void Application::onClientUdpPacket(const asio::ip::udp::endpoint& senderEndpoin
     }
 }
 
+// Admin console: lightweight commands typed by the server operator.
+// A "reset-password <username>" token substitutes for an email on this
+// trusted LAN — the operator hands the one-time code to the user directly.
+static constexpr int kPasswordResetTokenLifetimeSeconds = 600;
+
+void Application::serverConsoleLoop()
+{
+    std::string consoleLine;
+    while (std::getline(std::cin, consoleLine))
+    {
+        // Trim surrounding whitespace so trailing newlines/carriage returns don't break parsing.
+        std::size_t firstNonSpace = consoleLine.find_first_not_of(" \t\r\n");
+        if (firstNonSpace == std::string::npos)
+        {
+            continue;
+        }
+        std::size_t lastNonSpace = consoleLine.find_last_not_of(" \t\r\n");
+        consoleLine = consoleLine.substr(firstNonSpace, lastNonSpace - firstNonSpace + 1);
+
+        constexpr const char* kResetCommand = "reset-password ";
+
+        if (consoleLine == "help")
+        {
+            std::cout << "Commands: reset-password <username>  (prints a one-time reset token, valid "
+                      << kPasswordResetTokenLifetimeSeconds / 60 << " minutes)" << std::endl;
+        }
+        else if (consoleLine.rfind(kResetCommand, 0) == 0)
+        {
+            std::string username = consoleLine.substr(std::string(kResetCommand).length());
+
+            AccountInfo account;
+            if (username.empty() || !m_dbManager || !m_dbManager->getAccountByUsername(username, account))
+            {
+                std::cout << "Unknown account: '" << username << "'" << std::endl;
+                continue;
+            }
+
+            std::string resetToken = Utils::generateRandomUUID();
+            long long expiresAtEpochSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count() + kPasswordResetTokenLifetimeSeconds;
+
+            if (!m_dbManager->createPasswordReset(account.accountUuid, Utils::hashString(resetToken), expiresAtEpochSeconds))
+            {
+                std::cout << "Failed to store reset token in database, aborting." << std::endl;
+                continue;
+            }
+
+            // The raw token exists in exactly one place: this console print.
+            // Only its hash goes to the log file and the database.
+            std::cout << "[ADMIN] One-time reset token for '" << username << "':" << std::endl;
+            std::cout << "    " << resetToken << std::endl;
+            std::cout << "    (valid " << kPasswordResetTokenLifetimeSeconds / 60 << " minutes; hand this to the user)" << std::endl;
+            spdlog::info("Password reset token issued for user: {}", username);
+        }
+        else
+        {
+            std::cout << "Unknown command. Type 'help'." << std::endl;
+        }
+    }
+}
+
 void Application::serverControlLoop()
 {
     spdlog::trace("Server control loop started");
-
     struct ClientProfile
     {
         std::string username;
@@ -298,24 +368,45 @@ void Application::serverControlLoop()
             std::getline(dataStream, password, '|');
             std::getline(dataStream, clientUdpPort);
 
-            // LOGIN must never create an account — registration happens only via REGISTER,
-            // so a typo'd username fails loudly instead of silently claiming a new account.
+            std::string sourceIp = incomingIp.substr(0, incomingIp.find(':'));
+            std::string accountThrottleKey = "account:" + username.substr(0, 64);
+
+            // Brute-force defense: lockouts come first and never touch the database,
+            // so throttled callers get a fast, uniform rejection (no user enumeration
+            // and no timing side-channel between throttle states).
+            if (m_loginRateLimiter.secondsUntilAllowed(sourceIp) > 0 ||
+                m_loginRateLimiter.secondsUntilAllowed(accountThrottleKey) > 0)
+            {
+                spdlog::warn("Login throttled for {} (user '{}')", sourceIp, username);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                return "AUTH_FAILED|Too many attempts";
+            }
+
+            // LOGIN must never create an account — registration happens only via REGISTER.
+            // Unknown username and wrong password are deliberately the same response:
+            // distinguishing them would leak which usernames exist.
             AccountInfo account;
             if (!m_dbManager->getAccountByUsername(username, account))
             {
-                spdlog::warn("Login attempted for unknown account: {}", username);
-                return "AUTH_FAILED|No account with that username";
+                spdlog::warn("Login failed for unknown account: {} from {}", username, sourceIp);
+                m_loginRateLimiter.recordFailure(sourceIp);
+                m_loginRateLimiter.recordFailure(accountThrottleKey);
+                return "AUTH_FAILED|Invalid credentials";
             }
 
             std::string hash = Utils::hashPassword(password, account.passwordSalt);
             if (hash != account.passwordHash)
             {
-                spdlog::warn("Invalid password for user: {}", username);
-                return "AUTH_FAILED|Invalid password";
+                spdlog::warn("Login failed, invalid password for user: {} from {}", username, sourceIp);
+                m_loginRateLimiter.recordFailure(sourceIp);
+                m_loginRateLimiter.recordFailure(accountThrottleKey);
+                return "AUTH_FAILED|Invalid credentials";
             }
 
             std::string sessionToken = createSessionForAccount(account.accountUuid);
             completeAuthentication(account.accountUuid, username, incomingIp, clientUdpPort);
+            m_loginRateLimiter.recordSuccess(sourceIp);
+            m_loginRateLimiter.recordSuccess(accountThrottleKey);
 
             return "AUTH_SUCCESS|" + account.accountUuid + "|" + sessionToken + "|" + username;
         }
@@ -326,16 +417,36 @@ void Application::serverControlLoop()
             std::getline(dataStream, password, '|');
             std::getline(dataStream, clientUdpPort);
 
+            std::string sourceIp = incomingIp.substr(0, incomingIp.find(':'));
+            std::string accountThrottleKey = "account:" + username.substr(0, 64);
+
+            if (m_loginRateLimiter.secondsUntilAllowed(sourceIp) > 0 ||
+                m_loginRateLimiter.secondsUntilAllowed(accountThrottleKey) > 0)
+            {
+                spdlog::warn("Registration throttled for {} (user '{}')", sourceIp, username);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                return "AUTH_FAILED|Too many attempts";
+            }
+
             if (!isValidDisplayName(username))
             {
-                return "AUTH_FAILED|Invalid username";
+                m_loginRateLimiter.recordFailure(sourceIp);
+                return "AUTH_FAILED|Registration failed";
             }
 
             AccountInfo existingAccount;
             if (m_dbManager->getAccountByUsername(username, existingAccount))
             {
-                spdlog::warn("Registration rejected, username already taken: {}", username);
+                spdlog::warn("Registration rejected, username already taken: {} from {}", username, sourceIp);
+                // Counting this as a failure makes username enumeration expensive.
+                m_loginRateLimiter.recordFailure(sourceIp);
                 return "AUTH_FAILED|Username is already taken";
+            }
+
+            if (!m_loginRateLimiter.isAllowedToRegister(sourceIp))
+            {
+                spdlog::warn("Registration budget exhausted for {}", sourceIp);
+                return "AUTH_FAILED|Too many attempts";
             }
 
             std::string salt = Utils::generateSalt();
@@ -346,12 +457,126 @@ void Application::serverControlLoop()
                 return "AUTH_FAILED|Registration failed";
             }
 
-            spdlog::info("Registered new account: {} with UUID: {}", username, accountUuid);
+            spdlog::info("Registered new account: {} with UUID: {} from {}", username, accountUuid, sourceIp);
+            m_loginRateLimiter.recordRegistration(sourceIp);
+            m_loginRateLimiter.recordSuccess(sourceIp);
 
             std::string sessionToken = createSessionForAccount(accountUuid);
             completeAuthentication(accountUuid, username, incomingIp, clientUdpPort);
 
             return "AUTH_SUCCESS|" + accountUuid + "|" + sessionToken + "|" + username;
+        }
+        else if (parsedRequest.messageType == "RESET_PASSWORD")
+        {
+            std::string username, resetToken, newPassword, clientUdpPort;
+            std::getline(dataStream, username, '|');
+            std::getline(dataStream, resetToken, '|');
+            std::getline(dataStream, newPassword, '|');
+            std::getline(dataStream, clientUdpPort);
+
+            std::string sourceIp = incomingIp.substr(0, incomingIp.find(':'));
+            std::string accountThrottleKey = "account:" + username.substr(0, 64);
+
+            if (m_loginRateLimiter.secondsUntilAllowed(sourceIp) > 0 ||
+                m_loginRateLimiter.secondsUntilAllowed(accountThrottleKey) > 0)
+            {
+                spdlog::warn("Password reset throttled for {} (user '{}')", sourceIp, username);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                return "AUTH_FAILED|Too many attempts";
+            }
+
+            if (!isValidDisplayName(username) || newPassword.empty() || newPassword.size() > 128 ||
+                newPassword.find('|') != std::string::npos)
+            {
+                m_loginRateLimiter.recordFailure(sourceIp);
+                return "AUTH_FAILED|Invalid or expired reset token";
+            }
+
+            // The token row is consumed on first sight (one-time use), whether or
+            // not it was still valid, so replayed tokens disappear immediately.
+            AccountInfo account;
+            std::string resetTokenHash = Utils::hashString(resetToken);
+            if (!m_dbManager->consumePasswordReset(resetTokenHash, account) || account.username != username)
+            {
+                spdlog::warn("Password reset rejected, invalid/expired token from {} (user '{}')", sourceIp, username);
+                m_loginRateLimiter.recordFailure(sourceIp);
+                return "AUTH_FAILED|Invalid or expired reset token";
+            }
+
+            std::string salt = Utils::generateSalt();
+            std::string hash = Utils::hashPassword(newPassword, salt);
+            if (!m_dbManager->updateAccountPassword(account.accountUuid, hash, salt))
+            {
+                return "AUTH_FAILED|Registration failed";
+            }
+
+            // Every existing session is dead once the password changes.
+            m_dbManager->revokeAllSessions(account.accountUuid);
+
+            spdlog::info("Password reset completed for user: {}", username);
+            m_loginRateLimiter.recordSuccess(sourceIp);
+            m_loginRateLimiter.recordSuccess(accountThrottleKey);
+
+            std::string sessionToken = createSessionForAccount(account.accountUuid);
+            completeAuthentication(account.accountUuid, username, incomingIp, clientUdpPort);
+
+            return "AUTH_SUCCESS|" + account.accountUuid + "|" + sessionToken + "|" + username;
+        }
+        else if (parsedRequest.messageType == "CHANGE_PASSWORD")
+        {
+            std::string currentPassword, newPassword;
+            std::getline(dataStream, currentPassword, '|');
+            std::getline(dataStream, newPassword);
+
+            auto clientProfile = clientMap.find(parsedRequest.senderUuid);
+            if (clientProfile == clientMap.end())
+            {
+                return "PASSWORD_CHANGE_FAILED|Not signed in";
+            }
+
+            std::string sourceIp = incomingIp.substr(0, incomingIp.find(':'));
+            std::string accountThrottleKey = "account:" + clientProfile->second.username.substr(0, 64);
+
+            if (m_loginRateLimiter.secondsUntilAllowed(accountThrottleKey) > 0)
+            {
+                spdlog::warn("Password change throttled for {}", accountThrottleKey);
+                return "PASSWORD_CHANGE_FAILED|Too many attempts";
+            }
+
+            if (currentPassword.empty() || newPassword.empty() || newPassword.size() > 128 ||
+                newPassword.find('|') != std::string::npos)
+            {
+                return "PASSWORD_CHANGE_FAILED|Invalid message";
+            }
+
+            AccountInfo account;
+            if (!m_dbManager->getAccountByUsername(clientProfile->second.username, account))
+            {
+                return "PASSWORD_CHANGE_FAILED|Invalid message";
+            }
+
+            std::string currentHash = Utils::hashPassword(currentPassword, account.passwordSalt);
+            if (currentHash != account.passwordHash)
+            {
+                spdlog::warn("Password change rejected, wrong current password for user: {}", account.username);
+                m_loginRateLimiter.recordFailure(accountThrottleKey);
+                return "PASSWORD_CHANGE_FAILED|Incorrect password";
+            }
+
+            std::string salt = Utils::generateSalt();
+            std::string hash = Utils::hashPassword(newPassword, salt);
+            if (!m_dbManager->updateAccountPassword(account.accountUuid, hash, salt))
+            {
+                return "PASSWORD_CHANGE_FAILED|Invalid message";
+            }
+
+            // Devices other than this one are signed out by revoking every session,
+            // then issuing the caller a brand-new one to keep it signed in.
+            m_dbManager->revokeAllSessions(account.accountUuid);
+            m_loginRateLimiter.recordSuccess(accountThrottleKey);
+
+            spdlog::info("Password changed for user: {}", account.username);
+            return "PASSWORD_CHANGED|" + createSessionForAccount(account.accountUuid);
         }
         else if (parsedRequest.messageType == "AUTH_SESSION")
         {
@@ -428,7 +653,9 @@ void Application::serverControlLoop()
 
             long long nowEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
-            m_networkManager.broadcastTcp("PUSH_CHAT|" + username + ": " + message + "|" + std::to_string(nowEpochMs));
+            // Channel id rides along so the client can attach (or reject) the
+            // message without guessing the receiving channel.
+            m_networkManager.broadcastTcp("PUSH_CHAT|" + std::to_string(channelId) + "|" + username + ": " + message + "|" + std::to_string(nowEpochMs));
             return "ACK";
         }
         else if (parsedRequest.messageType == "REQ_CHAT_LOG")
@@ -436,21 +663,48 @@ void Application::serverControlLoop()
             std::string channelIdString;
             std::getline(dataStream, channelIdString, '|');
             int channelId = std::stoi(channelIdString);
-            std::string chatResponse = "CHAT_LOG|";
-            
+
             spdlog::debug("Chat log requested for channel {} by UUID: {}", channelId, parsedRequest.senderUuid);
+            std::string chatResponse = "CHAT_LOG|" + std::to_string(channelId) + "|1|";
 
             if (m_dbManager)
             {
-                auto history = m_dbManager->fetchLastMessages(channelId, 50);
+                bool hasMoreHistory = false;
+                auto history = m_dbManager->fetchLastMessages(channelId, kChatHistoryPageSize, hasMoreHistory);
+                chatResponse = "CHAT_LOG|" + std::to_string(channelId) + "|" + (hasMoreHistory ? "1" : "0") + "|";
                 for (const auto& chatMessage : history)
                 {
                     chatResponse += chatMessage.username + ": " + chatMessage.message + "|" + std::to_string(chatMessage.timestamp) + "\n";
                 }
             }
-            spdlog::debug("CHAT_LOG line: {}", chatResponse);  // prints entire payload
-            m_networkManager.sendTcpTo(parsedRequest.senderUuid, chatResponse); 
-            return ""; 
+            m_networkManager.sendTcpTo(parsedRequest.senderUuid, chatResponse);
+            return "";
+        }
+        else if (parsedRequest.messageType == "REQ_CHAT_LOG_BEFORE")
+        {
+            // Scroll-up paging: read one page of messages older than the client's
+            // oldest loaded row. Response carries real hasMore from the DB.
+            std::string channelIdString, beforeString;
+            std::getline(dataStream, channelIdString, '|');
+            std::getline(dataStream, beforeString);
+            int channelId = std::stoi(channelIdString);
+            long long beforeTimestampMs = std::stoll(beforeString);
+
+            bool hasMoreHistory = false;
+            std::string chatResponse = "CHAT_LOG_MORE|" + std::to_string(channelId) + "|0|";
+
+            if (m_dbManager)
+            {
+                spdlog::debug("Chat history page requested for channel {} before {} by UUID: {}", channelId, beforeTimestampMs, parsedRequest.senderUuid);
+                auto history = m_dbManager->fetchMessagesBefore(channelId, beforeTimestampMs, kChatHistoryPageSize, hasMoreHistory);
+                chatResponse = "CHAT_LOG_MORE|" + std::to_string(channelId) + "|" + (hasMoreHistory ? "1" : "0") + "|";
+                for (const auto& chatMessage : history)
+                {
+                    chatResponse += chatMessage.username + ": " + chatMessage.message + "|" + std::to_string(chatMessage.timestamp) + "\n";
+                }
+            }
+            m_networkManager.sendTcpTo(parsedRequest.senderUuid, chatResponse);
+            return "";
         }
         else if (parsedRequest.messageType == "SYNC_CHANNELS" || parsedRequest.messageType == "CREATE_CHANNEL")
         {
@@ -551,22 +805,30 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
     // 1. NOT LOGGED IN PHASE
     if (currentUuid.empty())
     {
-        // If we already fired off the auth request, chill out and wait for the server's push response
+        // An auth request is already on the wire — wait for the server's push response.
         if (m_authRequestInFlight.load())
         {
+            m_windowManager.setLoginState(static_cast<int>(LoginState::Authenticating));
             return; 
         }
 
         std::string savedToken = Utils::getSavedSessionToken();
-        std::string pendingUser, pendingPass;
+        std::string pendingUser, pendingPass, pendingResetToken, pendingNewPassword;
         bool hasManualLogin = m_windowManager.getPendingLogin(pendingUser, pendingPass);
         bool hasPendingRegistration = m_windowManager.getPendingRegistration(pendingUser, pendingPass);
+        bool hasPendingReset = m_windowManager.getPendingPasswordReset(pendingUser, pendingResetToken, pendingNewPassword);
 
-        // DO NOT connect to TCP unless we actually have credentials or a token to send
-        if (savedToken.empty() && !hasManualLogin && !hasPendingRegistration)
+        // DO NOT connect to TCP unless we actually have credentials or a token to send.
+        // With nothing to send, the client is idle and the UI must show the login
+        // form — reporting "connecting" here would hide the form behind the spinner.
+        if (savedToken.empty() && !hasManualLogin && !hasPendingRegistration && !hasPendingReset)
         {
+            m_windowManager.setLoginState(static_cast<int>(LoginState::Disconnected));
             return; 
         }
+
+        // Credentials or token in hand: we are genuinely about to dial the server.
+        m_windowManager.setLoginState(static_cast<int>(LoginState::Connecting));
 
         spdlog::debug("Connecting to persistent TCP to dispatch auth request...");
         if (!m_networkManager.connectPersistentTcp(serverIp, pushHandler))
@@ -578,7 +840,12 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
 
         int localAudioPort = m_networkManager.getLocalUdpPort();
 
-        if (hasPendingRegistration)
+        if (hasPendingReset)
+        {
+            spdlog::info("Submitting password reset for user: {}", pendingUser);
+            m_networkManager.sendPersistentTcp("RESET_PASSWORD||" + pendingUser + "|" + pendingResetToken + "|" + pendingNewPassword + "|" + std::to_string(localAudioPort));
+        }
+        else if (hasPendingRegistration)
         {
             spdlog::info("Registering new account for user: {}", pendingUser);
             m_networkManager.sendPersistentTcp("REGISTER||" + pendingUser + "|" + pendingPass + "|" + std::to_string(localAudioPort));
@@ -600,6 +867,7 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
 
     // 2. LOGGED IN PHASE
     m_authRequestInFlight.store(false); // Successfully authenticated
+    m_windowManager.setLoginState(static_cast<int>(LoginState::LoggedIn));
 
     // Check for Logout Request
     if (m_windowManager.getPendingLogout())
@@ -613,6 +881,14 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
         }
         m_windowManager.confirmLogout();
         return;
+    }
+
+    // Check for Change Password Request
+    std::string currentPassword, newPassword;
+    if (m_windowManager.getPendingPasswordChange(currentPassword, newPassword))
+    {
+        spdlog::info("Submitting password change request.");
+        m_networkManager.sendPersistentTcp("CHANGE_PASSWORD|" + currentUuid + "|" + currentPassword + "|" + newPassword);
     }
 
     auto currentTime = std::chrono::steady_clock::now();
@@ -666,6 +942,14 @@ void Application::processActiveClientState(const std::string& serverIp, std::chr
     {
         spdlog::debug("Sending chat message to channel {}", uiTextChannelId);
         m_networkManager.sendPersistentTcp("CHAT|" + currentUuid + "|" + std::to_string(uiTextChannelId) + "|" + outgoingMessage);
+    }
+
+    int historyRequestChannelId = -1;
+    long long historyRequestBeforeMs = 0;
+    if (m_windowManager.getPendingHistoryRequest(historyRequestChannelId, historyRequestBeforeMs))
+    {
+        spdlog::debug("Requesting chat history page for channel {} before {}", historyRequestChannelId, historyRequestBeforeMs);
+        m_networkManager.sendPersistentTcp("REQ_CHAT_LOG_BEFORE|" + currentUuid + "|" + std::to_string(historyRequestChannelId) + "|" + std::to_string(historyRequestBeforeMs));
     }
 
     std::string newTextChannel = m_windowManager.getPendingNewTextChannel();
@@ -759,10 +1043,33 @@ void Application::processClientTcpPush(const std::string& payload)
         spdlog::warn("Authentication failed: {}", reason);
         Utils::clearSessionToken();
         
-        m_windowManager.setLoginError(reason); // Pass the error text to the UI
+        m_windowManager.setLoginError(reason); // Rendered through the backend's curated whitelist
         m_windowManager.confirmLogout();
         
         m_authRequestInFlight.store(false);
+        return;
+    }
+    else if (payload.find("PASSWORD_CHANGED|") == 0)
+    {
+        std::string refreshedToken = payload.substr(17);
+        if (refreshedToken.empty())
+        {
+            m_windowManager.setPasswordNotice("Rejected");
+            return;
+        }
+
+        // The server revoked every session when the password changed and issued
+        // a fresh one, so this device stays signed in with the new token.
+        Utils::saveSessionToken(refreshedToken);
+        m_windowManager.setPasswordNotice("Success");
+        spdlog::info("Password changed successfully; session token refreshed.");
+        return;
+    }
+    else if (payload.find("PASSWORD_CHANGE_FAILED|") == 0)
+    {
+        std::string reason = payload.substr(22);
+        spdlog::warn("Password change rejected: {}", reason);
+        m_windowManager.setPasswordNotice(reason); // Rendered through the backend's curated whitelist
         return;
     }
 
@@ -773,43 +1080,58 @@ void Application::processClientTcpPush(const std::string& payload)
     }
     else if (payload.find("PUSH_CHAT|") == 0)
     {
-        std::string rawMsg = payload.substr(10);               // "username: message|epochMs"
-        std::string msgText;
-        long long epochMs = 0;
+        // Format: "PUSH_CHAT|<channelId>|username: message|epochMs"
+        std::istringstream pushStream(payload.substr(10));
+        std::string channelIdString;
+        std::getline(pushStream, channelIdString, '|');
 
-        size_t pipePos = rawMsg.rfind('|');
-        if (pipePos != std::string::npos)
+        std::string rest, msgText;
+        long long epochMs = 0;
+        std::getline(pushStream, rest);
+
+        size_t pipePosition = rest.rfind('|');
+        if (pipePosition != std::string::npos)
         {
-            msgText = rawMsg.substr(0, pipePos);
+            msgText = rest.substr(0, pipePosition);
             try
             {
-                epochMs = std::stoll(rawMsg.substr(pipePos + 1));
+                epochMs = std::stoll(rest.substr(pipePosition + 1));
             }
             catch (...) { }
         }
         else
         {
-            msgText = rawMsg;
+            msgText = rest;
         }
 
-        m_windowManager.appendChatMessage(msgText, epochMs);
+        try
+        {
+            m_windowManager.appendChatMessage(std::stoi(channelIdString), msgText, epochMs);
+        }
+        catch (const std::exception&)
+        {
+            // Malformed channel id — better to drop one broadcast than crash.
+            spdlog::warn("Dropping PUSH_CHAT with unparseable channel id");
+        }
     }
     else if (payload.find("CHAT_LOG|") == 0)
     {
-        std::vector<std::pair<std::string, long long>> chatHistory;
-        std::istringstream chatStream(payload.substr(9));
-        std::string chatLine;
+        // Format: "CHAT_LOG|<channelId>|<hasMore(0|1)>|<user: msg|epochMs lines>"
+        std::istringstream headerStream(payload.substr(9));
+        std::string channelIdString, hasMoreString;
+        std::getline(headerStream, channelIdString, '|');
+        std::getline(headerStream, hasMoreString, '|');
 
-        while (std::getline(chatStream, chatLine, '\n'))
+        std::vector<std::pair<std::string, long long>> chatHistory;
+        std::string chatLine;
+        while (std::getline(headerStream, chatLine))
         {
             if (chatLine.empty())
                 continue;
 
-            // Format: "username: message|epochMs"
-            size_t lastPipe = chatLine.rfind('|');
             long long epochMs = 0;
             std::string messageText = chatLine;
-
+            size_t lastPipe = chatLine.rfind('|');
             if (lastPipe != std::string::npos)
             {
                 try
@@ -822,12 +1144,63 @@ void Application::processClientTcpPush(const std::string& payload)
                 }
                 messageText = chatLine.substr(0, lastPipe);
             }
-
             chatHistory.emplace_back(messageText, epochMs);
         }
 
-        spdlog::debug("Received chat log with {} lines", chatHistory.size());
-        m_windowManager.setChatHistory(chatHistory);
+        try
+        {
+            bool hasMoreHistory = (hasMoreString == "1");
+            spdlog::debug("Received chat log for channel {} with {} lines", channelIdString, chatHistory.size());
+            m_windowManager.setChatHistory(std::stoi(channelIdString), hasMoreHistory, chatHistory);
+        }
+        catch (const std::exception&)
+        {
+            spdlog::warn("CHAT_LOG parse failure — dropping history page");
+        }
+    }
+    else if (payload.find("CHAT_LOG_MORE|") == 0)
+    {
+        // Older-messages page from scroll-up paging; same line shape as CHAT_LOG.
+        std::istringstream headerStream(payload.substr(14));
+        std::string channelIdString, hasMoreString;
+        std::getline(headerStream, channelIdString, '|');
+        std::getline(headerStream, hasMoreString, '|');
+
+        std::vector<std::pair<std::string, long long>> historyPage;
+        std::string chatLine;
+        while (std::getline(headerStream, chatLine))
+        {
+            if (chatLine.empty())
+                continue;
+
+            long long epochMs = 0;
+            std::string messageText = chatLine;
+            size_t lastPipe = chatLine.rfind('|');
+            if (lastPipe != std::string::npos)
+            {
+                try
+                {
+                    epochMs = std::stoll(chatLine.substr(lastPipe + 1));
+                }
+                catch (...)
+                {
+                    epochMs = 0;
+                }
+                messageText = chatLine.substr(0, lastPipe);
+            }
+            historyPage.emplace_back(messageText, epochMs);
+        }
+
+        try
+        {
+            bool hasMoreHistory = (hasMoreString == "1");
+            spdlog::debug("Received {} older messages for channel {}, hasMore={}", historyPage.size(), channelIdString, hasMoreHistory);
+            m_windowManager.prependChatHistory(std::stoi(channelIdString), hasMoreHistory, historyPage);
+        }
+        catch (const std::exception&)
+        {
+            spdlog::warn("CHAT_LOG_MORE parse failure — dropping history page");
+        }
     }
     else if (payload.find("PUSH_PEERS|") == 0)
     {
